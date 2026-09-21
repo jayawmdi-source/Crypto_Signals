@@ -141,7 +141,8 @@ def send_telegram_new_signal(sig):
         f"📦 <b>1H Order Block:</b> {sig.get('order_block_1h', 'None')}\n"
         f"📊 <b>RSI:</b> Daily {sig.get('rsi_daily', '-')} | 1H {sig.get('rsi_1h', '-')}\n\n"
         f"💡 <b>Key Confirmations:</b>\n{reasons_bullets}\n\n"
-        f"🔗 <a href=\"https://www.binance.com/en/trade/{sig.get('symbol')}\">Trade #{sig.get('symbol')} on Binance</a>"
+        f"🔗 <a href=\"https://www.binance.com/en/trade/{sig.get('symbol')}\">Trade #{sig.get('symbol')} on Binance</a>\n"
+        f"🌐 <a href=\"https://jayawmdi-source.github.io/Crypto_Signals/\">Open Live SMC Dashboard</a>"
     )
     send_telegram_message(msg.strip())
 
