@@ -1714,15 +1714,15 @@
       "signal": "WATCHLIST",
       "tier_badge": "WATCHLIST",
       "setup": "Monitoring Structure",
-      "choch_badge": "No CHoCH",
+      "choch_badge": "1H CHoCH Bullish",
       "choch_data": {
         "has_bearish_choch": false,
-        "has_bullish_choch": false,
+        "has_bullish_choch": true,
         "key_hl": 7.665,
         "key_lh": 7.867,
         "recent_high": 7.9,
         "recent_low": 7.533,
-        "status": "Waiting for CHoCH"
+        "status": "Bullish CHoCH Confirmed"
       },
       "order_block_1h": "None",
       "rsi_daily": 70.7,
