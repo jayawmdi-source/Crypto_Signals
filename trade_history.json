@@ -1,12 +1,12 @@
 {
-  "updated_at": "2026-09-21 14:35:23",
+  "updated_at": "2026-09-21 15:06:17",
   "total_signals": 17,
-  "total_closed": 0,
+  "total_closed": 1,
   "wins": 0,
-  "losses": 0,
-  "pending": 17,
+  "losses": 1,
+  "pending": 16,
   "win_rate_pct": 0.0,
-  "net_pnl_r": 0.0,
+  "net_pnl_r": -1.0,
   "signals": [
     {
       "id": 1,
@@ -184,7 +184,9 @@
       "tp1": 5.754424999999999e-06,
       "tp1_str": "0.00000575",
       "tp2": 5.815899999999999e-06,
-      "tp2_str": "0.00000582"
+      "tp2_str": "0.00000582",
+      "tp1_hit": true,
+      "notified_tp1": true
     },
     {
       "id": 9,
@@ -204,7 +206,9 @@
       "tp1": 144.07457500000004,
       "tp1_str": "144.0746",
       "tp2": 145.92610000000005,
-      "tp2_str": "145.9261"
+      "tp2_str": "145.9261",
+      "tp1_hit": true,
+      "notified_tp1": true
     },
     {
       "id": 10,
@@ -341,12 +345,14 @@
       "sl_str": "0.041716",
       "tp": 0.036450500000000004,
       "tp_str": "0.036451",
-      "status": "OPEN",
-      "outcome_pnl": 0.0,
+      "status": "LOSS (SL Hit)",
+      "outcome_pnl": -1.0,
       "tp1": 0.03842525,
       "tp1_str": "0.038425",
       "tp2": 0.037767,
-      "tp2_str": "0.037767"
+      "tp2_str": "0.037767",
+      "resolved_at": "2026-09-21 15:06",
+      "notified_loss": true
     },
     {
       "id": 16,

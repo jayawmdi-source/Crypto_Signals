@@ -8,7 +8,14 @@ from concurrent.futures import ThreadPoolExecutor
 
 sys.stdout.reconfigure(encoding='utf-8')
 
-BASE_URL = "https://api.binance.com/api/v3"
+BINANCE_BASES = [
+    "https://data-api.binance.vision/api/v3",
+    "https://api.binance.com/api/v3",
+    "https://api1.binance.com/api/v3",
+    "https://api2.binance.com/api/v3",
+    "https://api3.binance.com/api/v3"
+]
+BASE_URL = BINANCE_BASES[0]
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
 }
@@ -125,14 +132,18 @@ def send_telegram_resolution(sig, event_type):
     send_telegram_message(msg.strip())
 
 def get_klines(symbol, interval="1d", limit=100):
-    url = f"{BASE_URL}/klines"
     params = {"symbol": symbol, "interval": interval, "limit": limit}
-    try:
-        resp = session.get(url, params=params, timeout=10)
-        resp.raise_for_status()
-        return resp.json()
-    except Exception:
-        return None
+    for base in BINANCE_BASES:
+        url = f"{base}/klines"
+        try:
+            resp = session.get(url, params=params, timeout=6)
+            if resp.status_code == 200:
+                data = resp.json()
+                if isinstance(data, list) and len(data) > 0:
+                    return data
+        except Exception:
+            continue
+    return None
 
 def calculate_ema(prices, period):
     if len(prices) < period:
@@ -771,6 +782,10 @@ def scan_all_pairs():
             res = future.result()
             if res:
                 results.append(res)
+
+    if len(results) == 0:
+        print("[!] Warning: 0 pairs could be fetched (network/endpoint issue). Preserving previous data!")
+        return [], []
 
     actionable = [r for r in results if r["signal"] in ["BUY / LONG", "SELL / SHORT"]]
     watchlist = [r for r in results if r["signal"] == "WATCHLIST"]
@@ -1466,7 +1481,13 @@ def generate_html_dashboard(data, output_path):
         // Real-Time Live Price Polling from Binance API every 4 seconds!
         async function fetchLivePrices() {{
             try {{
-                const resp = await fetch('https://api.binance.com/api/v3/ticker/price');
+                let resp;
+                try {{
+                    resp = await fetch('https://data-api.binance.vision/api/v3/ticker/price');
+                }} catch (e) {{}}
+                if (!resp || !resp.ok) {{
+                    resp = await fetch('https://api.binance.com/api/v3/ticker/price');
+                }}
                 if (!resp.ok) return;
                 const tickerList = await resp.json();
                 const priceMap = {{}};
