@@ -179,6 +179,18 @@ def calculate_rsi(prices, period=14):
     rs = avg_gain / avg_loss
     return 100.0 - (100.0 / (1.0 + rs))
 
+def fmt_price(val):
+    if val is None or val == 0:
+        return "-"
+    if val >= 1000:
+        return f"{val:,.2f}"
+    elif val >= 1:
+        return f"{val:.4f}"
+    elif val >= 0.0001:
+        return f"{val:.6f}"
+    else:
+        return f"{val:.8f}"
+
 def find_line_chart_sr(close_prices, window=3):
     supports = []
     resistances = []
@@ -373,200 +385,234 @@ def analyze_symbol(symbol, anchored_signal=None):
     tp2 = 0
     ob_info_str = "None"
     choch_badge = "No CHoCH"
+    limit_setup = None
+    action_status = "MONITORING"
+    action_label = "Monitoring Structure"
 
-    is_extreme_overbought = (rsi_daily >= 78.0) or (rsi_1h >= 80.0)
-    is_extreme_oversold = (rsi_daily <= 22.0) or (rsi_1h <= 20.0)
-
-    # TIER 2: SNIPER EXTREME REVERSALS
-    if is_extreme_overbought and choch_data["has_bearish_choch"]:
-        signal_type = "SELL / SHORT"
-        tier_badge = "🔥 TIER 2: SNIPER EXTREME"
-        trade_setup = "Extreme Overbought (RSI > 80) + 1H Bearish CHoCH"
-        choch_badge = "1H CHoCH Confirmed 🔴"
-        sl = choch_data["recent_high"] * 1.015
-        risk = sl - entry
-        if risk / entry < 0.025:
-            sl = entry * 1.028
-            risk = sl - entry
-        tp1 = entry - (risk * 1.5)
-        tp2 = entry - (risk * 2.0)
-        tp = entry - (risk * 3.0)
-        reasons.append(f"Extreme RSI Overbought ({rsi_daily:.1f})")
-        reasons.append(f"Confirmed 1H Bearish CHoCH below ${choch_data['key_hl']}")
-        if bear_ob_1h:
-            ob_info_str = f"Bearish 1H OB [${bear_ob_1h['bottom']:.4f} - ${bear_ob_1h['top']:.4f}]"
-
-    elif is_extreme_oversold and choch_data["has_bullish_choch"]:
-        signal_type = "BUY / LONG"
-        tier_badge = "🔥 TIER 2: SNIPER EXTREME"
-        trade_setup = "Extreme Oversold (RSI < 20) + 1H Bullish CHoCH"
-        choch_badge = "1H CHoCH Confirmed 🟢"
-        sl = choch_data["recent_low"] * 0.985
-        risk = entry - sl
-        if risk / entry < 0.025:
-            sl = entry * 0.972
-            risk = entry - sl
-        tp1 = entry + (risk * 1.5)
-        tp2 = entry + (risk * 2.0)
-        tp = entry + (risk * 3.0)
-        reasons.append(f"Extreme RSI Oversold ({rsi_daily:.1f})")
-        reasons.append(f"Confirmed 1H Bullish CHoCH above ${choch_data['key_lh']}")
-        if bull_ob_1h:
-            ob_info_str = f"Bullish 1H OB [${bull_ob_1h['bottom']:.4f} - ${bull_ob_1h['top']:.4f}]"
-
-    # TIER 1: DAILY BREAD & BUTTER
-    elif ema_bullish and (dist_to_support_pct <= 3.5 or is_sr_flip) and (38 <= rsi_daily <= 68):
-        signal_type = "BUY / LONG"
-        tier_badge = "⭐ TIER 1: DAILY SETUP"
-        trade_setup = "Daily Line Support Bounce + 1H Demand OB" if not is_sr_flip else "S/R Flip Breakout & Retest"
+    # =========================================================================
+    # CASE 1: ACTIVE OPEN TRADE (Anchored from trade_history.json)
+    # The trade is ALREADY OPEN. Maintain frozen entry, SL, TP1, TP2, TP3.
+    # Categorize as RUNNING (in profit) or READY (in entry zone) or LIMIT.
+    # =========================================================================
+    if anchored_signal:
+        signal_type = anchored_signal.get("type", "BUY / LONG")
+        tier_badge = anchored_signal.get("tier_badge", "⭐ TIER 1: ACTIVE TRADE")
+        trade_setup = anchored_signal.get("setup", "Active SMC Trade")
+        entry = anchored_signal.get("entry", current_price)
+        sl = anchored_signal.get("sl", 0)
+        tp = anchored_signal.get("tp", 0)
+        tp1 = anchored_signal.get("tp1", 0)
+        tp2 = anchored_signal.get("tp2", 0)
+        limit_setup = anchored_signal.get("limit_setup")
         
-        base_support = flip_lvl if is_sr_flip else nearest_support
-        if bull_ob_1h and bull_ob_1h['bottom'] < entry:
-            base_support = min(base_support, bull_ob_1h['bottom'])
-            
-        # Structural Stop Loss: strictly anchored below OB bottom or Daily Support with safe 1.5% buffer
-        sl = base_support * 0.985
-        risk = entry - sl
-        if risk / entry < 0.02:
-            sl = entry * 0.978
-            risk = entry - sl
-            
-        tp1 = entry + (risk * 1.5)
-        tp2 = entry + (risk * 2.0)
-        tp = entry + (risk * 3.0)
-        reasons.append(f"Holding Daily Line Support ${base_support:.4f} (+{dist_to_support_pct:.1f}%)")
-        reasons.append("20 EMA > 50 EMA Bullish Trend Aligned")
-        reasons.append(f"RSI {rsi_daily:.1f} in healthy bullish momentum")
-        if bull_ob_1h:
-            ob_info_str = f"Bullish 1H OB [${bull_ob_1h['bottom']:.4f} - ${bull_ob_1h['top']:.4f}]"
-            reasons.append(f"1H Demand Order Block Active: {ob_info_str}")
-
-    elif (not ema_bullish) and (dist_to_resistance_pct <= 3.5) and (32 <= rsi_daily <= 62):
-        signal_type = "SELL / SHORT"
-        tier_badge = "⭐ TIER 1: DAILY SETUP"
-        trade_setup = "Daily Line Resistance Rejection + 1H Supply OB"
+        is_long = "BUY" in signal_type or "LONG" in signal_type
+        diff_pct = ((current_price - entry) / entry * 100) if is_long else ((entry - current_price) / entry * 100)
         
-        base_res = nearest_resistance
-        if bear_ob_1h and bear_ob_1h['top'] > entry:
-            base_res = max(base_res, bear_ob_1h['top'])
-            
-        # Structural Stop Loss: strictly anchored above OB top or Daily Resistance with safe 1.5% buffer
-        sl = base_res * 1.015
-        risk = sl - entry
-        if risk / entry < 0.02:
-            sl = entry * 1.022
-            risk = sl - entry
-            
-        tp1 = entry - (risk * 1.5)
-        tp2 = entry - (risk * 2.0)
-        tp = entry - (risk * 3.0)
-        reasons.append(f"Testing Daily Line Resistance ${base_res:.4f}")
-        reasons.append("20 EMA < 50 EMA Bearish Trend Aligned")
-        reasons.append(f"RSI {rsi_daily:.1f} in bearish momentum")
-        if bear_ob_1h:
-            ob_info_str = f"Bearish 1H OB [${bear_ob_1h['bottom']:.4f} - ${bear_ob_1h['top']:.4f}]"
-            reasons.append(f"1H Supply Order Block Active: {ob_info_str}")
-
-    else:
-        signal_type = "WATCHLIST"
-        if is_extreme_overbought:
-            tier_badge = "🛡️ PUMP PROTECTED"
-            trade_setup = f"RSI Overbought ({rsi_daily:.1f}), WAITING for 1H CHoCH (< ${choch_data['key_hl']})"
-            choch_badge = f"Waiting CHoCH (< ${choch_data['key_hl']})"
-            reasons.append(f"Protected against Parabolic Pump: Waiting for 1H CHoCH below ${choch_data['key_hl']}")
+        if anchored_signal.get("tp1_hit"):
+            action_status = "RUNNING"
+            action_label = f"TP1 HIT (BE Locked) | Running (+{diff_pct:.2f}%)"
+        elif diff_pct > 0.75:
+            action_status = "RUNNING"
+            action_label = f"RUNNING IN PROFIT (+{diff_pct:.2f}%)"
+        elif limit_setup:
+            action_status = "LIMIT"
+            action_label = f"SET LIMIT @ ${limit_setup['limit_entry']}"
+        elif diff_pct < -1.5:
+            action_status = "READY"
+            action_label = f"Discount Dip ({diff_pct:.2f}%) - IN ZONE"
         else:
-            tier_badge = "WATCHLIST"
-            reasons.append(f"Mid-range RSI ({rsi_daily:.1f}). Daily Line S&R: Sup ${nearest_support:.4f} | Res ${nearest_resistance:.4f}")
-            if choch_data["has_bearish_choch"]:
-                choch_badge = "1H CHoCH Bearish"
-            elif choch_data["has_bullish_choch"]:
-                choch_badge = "1H CHoCH Bullish"
+            action_status = "READY"
+            action_label = f"IN ENTRY ZONE ({diff_pct:+.2f}%)"
 
-    # Anchor persistence: if this symbol already has an active OPEN trade of the same type, freeze its entry & targets!
-    if anchored_signal and signal_type in ["BUY / LONG", "SELL / SHORT"] and anchored_signal.get("type") == signal_type:
-        entry = anchored_signal.get("entry", entry)
-        sl = anchored_signal.get("sl", sl)
-        tp = anchored_signal.get("tp", tp)
-        tp1 = anchored_signal.get("tp1", tp1)
-        tp2 = anchored_signal.get("tp2", tp2)
+        reasons.append(f"Active trade running: Entry ${fmt_price(entry)} | Live: ${fmt_price(current_price)} ({diff_pct:+.2f}%)")
+        if anchored_signal.get("tp1_hit"):
+            reasons.append("TP1 (1:1.5) Secured! 50% Profit locked, SL at Break-Even.")
+        reasons.append(f"Trend: {'Bullish (20>50 EMA)' if ema_bullish else 'Bearish (20<50 EMA)'} | Daily RSI: {rsi_daily:.1f}")
+        if bull_ob_1h:
+            ob_info_str = f"Bullish 1H OB [${fmt_price(bull_ob_1h['bottom'])} - ${fmt_price(bull_ob_1h['top'])}]"
+            reasons.append(f"1H Demand Order Block: {ob_info_str}")
+        elif bear_ob_1h:
+            ob_info_str = f"Bearish 1H OB [${fmt_price(bear_ob_1h['bottom'])} - ${fmt_price(bear_ob_1h['top'])}]"
+            reasons.append(f"1H Supply Order Block: {ob_info_str}")
+        if choch_data["has_bullish_choch"]:
+            choch_badge = "1H CHoCH Confirmed 🟢"
+        elif choch_data["has_bearish_choch"]:
+            choch_badge = "1H CHoCH Confirmed 🔴"
+
+    # =========================================================================
+    # CASE 2: NEW POTENTIAL SIGNALS (Scan fresh setups)
+    # =========================================================================
+    else:
+        is_extreme_overbought = (rsi_daily >= 78.0) or (rsi_1h >= 80.0)
+        is_extreme_oversold = (rsi_daily <= 22.0) or (rsi_1h <= 20.0)
+
+        # TIER 2: SNIPER EXTREME REVERSALS
+        if is_extreme_overbought and choch_data["has_bearish_choch"]:
+            signal_type = "SELL / SHORT"
+            tier_badge = "🔥 TIER 2: SNIPER EXTREME"
+            trade_setup = "Extreme Overbought (RSI > 80) + 1H Bearish CHoCH"
+            choch_badge = "1H CHoCH Confirmed 🔴"
+            sl = choch_data["recent_high"] * 1.015
+            risk = sl - entry
+            if risk / entry < 0.025:
+                sl = entry * 1.028
+                risk = sl - entry
+            tp1 = entry - (risk * 1.5)
+            tp2 = entry - (risk * 2.0)
+            tp = entry - (risk * 3.0)
+            reasons.append(f"Extreme RSI Overbought ({rsi_daily:.1f})")
+            reasons.append(f"Confirmed 1H Bearish CHoCH below ${choch_data['key_hl']}")
+            if bear_ob_1h:
+                ob_info_str = f"Bearish 1H OB [${bear_ob_1h['bottom']:.4f} - ${bear_ob_1h['top']:.4f}]"
+
+        elif is_extreme_oversold and choch_data["has_bullish_choch"]:
+            signal_type = "BUY / LONG"
+            tier_badge = "🔥 TIER 2: SNIPER EXTREME"
+            trade_setup = "Extreme Oversold (RSI < 20) + 1H Bullish CHoCH"
+            choch_badge = "1H CHoCH Confirmed 🟢"
+            sl = choch_data["recent_low"] * 0.985
+            risk = entry - sl
+            if risk / entry < 0.025:
+                sl = entry * 0.972
+                risk = entry - sl
+            tp1 = entry + (risk * 1.5)
+            tp2 = entry + (risk * 2.0)
+            tp = entry + (risk * 3.0)
+            reasons.append(f"Extreme RSI Oversold ({rsi_daily:.1f})")
+            reasons.append(f"Confirmed 1H Bullish CHoCH above ${choch_data['key_lh']}")
+            if bull_ob_1h:
+                ob_info_str = f"Bullish 1H OB [${bull_ob_1h['bottom']:.4f} - ${bull_ob_1h['top']:.4f}]"
+
+        # TIER 1: DAILY BREAD & BUTTER
+        elif ema_bullish and (dist_to_support_pct <= 3.5 or is_sr_flip) and (38 <= rsi_daily <= 68):
+            signal_type = "BUY / LONG"
+            tier_badge = "⭐ TIER 1: DAILY SETUP"
+            trade_setup = "Daily Line Support Bounce + 1H Demand OB" if not is_sr_flip else "S/R Flip Breakout & Retest"
+            
+            base_support = flip_lvl if is_sr_flip else nearest_support
+            if bull_ob_1h and bull_ob_1h['bottom'] < entry:
+                base_support = min(base_support, bull_ob_1h['bottom'])
+                
+            # Structural Stop Loss: strictly anchored below OB bottom or Daily Support with safe 1.5% buffer
+            sl = base_support * 0.985
+            risk = entry - sl
+            if risk / entry < 0.02:
+                sl = entry * 0.978
+                risk = entry - sl
+                
+            tp1 = entry + (risk * 1.5)
+            tp2 = entry + (risk * 2.0)
+            tp = entry + (risk * 3.0)
+            reasons.append(f"Holding Daily Line Support ${base_support:.4f} (+{dist_to_support_pct:.1f}%)")
+            reasons.append("20 EMA > 50 EMA Bullish Trend Aligned")
+            reasons.append(f"RSI {rsi_daily:.1f} in healthy bullish momentum")
+            if bull_ob_1h:
+                ob_info_str = f"Bullish 1H OB [${bull_ob_1h['bottom']:.4f} - ${bull_ob_1h['top']:.4f}]"
+                reasons.append(f"1H Demand Order Block Active: {ob_info_str}")
+
+        elif (not ema_bullish) and (dist_to_resistance_pct <= 3.5) and (32 <= rsi_daily <= 62):
+            signal_type = "SELL / SHORT"
+            tier_badge = "⭐ TIER 1: DAILY SETUP"
+            trade_setup = "Daily Line Resistance Rejection + 1H Supply OB"
+            
+            base_res = nearest_resistance
+            if bear_ob_1h and bear_ob_1h['top'] > entry:
+                base_res = max(base_res, bear_ob_1h['top'])
+                
+            # Structural Stop Loss: strictly anchored above OB top or Daily Resistance with safe 1.5% buffer
+            sl = base_res * 1.015
+            risk = sl - entry
+            if risk / entry < 0.02:
+                sl = entry * 1.022
+                risk = sl - entry
+                
+            tp1 = entry - (risk * 1.5)
+            tp2 = entry - (risk * 2.0)
+            tp = entry - (risk * 3.0)
+            reasons.append(f"Testing Daily Line Resistance ${base_res:.4f}")
+            reasons.append("20 EMA < 50 EMA Bearish Trend Aligned")
+            reasons.append(f"RSI {rsi_daily:.1f} in bearish momentum")
+            if bear_ob_1h:
+                ob_info_str = f"Bearish 1H OB [${bear_ob_1h['bottom']:.4f} - ${bear_ob_1h['top']:.4f}]"
+                reasons.append(f"1H Supply Order Block Active: {ob_info_str}")
+
+        else:
+            signal_type = "WATCHLIST"
+            if is_extreme_overbought:
+                tier_badge = "🛡️ PUMP PROTECTED"
+                trade_setup = f"RSI Overbought ({rsi_daily:.1f}), WAITING for 1H CHoCH (< ${choch_data['key_hl']})"
+                choch_badge = f"Waiting CHoCH (< ${choch_data['key_hl']})"
+                reasons.append(f"Protected against Parabolic Pump: Waiting for 1H CHoCH below ${choch_data['key_hl']}")
+            else:
+                tier_badge = "WATCHLIST"
+                reasons.append(f"Mid-range RSI ({rsi_daily:.1f}). Daily Line S&R: Sup ${nearest_support:.4f} | Res ${nearest_resistance:.4f}")
+                if choch_data["has_bearish_choch"]:
+                    choch_badge = "1H CHoCH Bearish"
+                elif choch_data["has_bullish_choch"]:
+                    choch_badge = "1H CHoCH Bullish"
+
+        # Check for limit setup on fresh signals
+        if signal_type == "BUY / LONG" and bull_ob_1h and bull_ob_1h['top'] < entry:
+            dist_to_ob_pct = ((entry - bull_ob_1h['top']) / entry) * 100
+            if dist_to_ob_pct >= 2.0:
+                l_entry = bull_ob_1h['top']
+                l_sl = sl
+                l_risk = l_entry - l_sl
+                l_tp1 = l_entry + (l_risk * 1.5)
+                l_tp2 = l_entry + (l_risk * 2.0)
+                l_tp = l_entry + (l_risk * 3.0)
+                limit_setup = {
+                    "limit_entry": fmt_price(l_entry),
+                    "raw_limit_entry": l_entry,
+                    "limit_sl": fmt_price(l_sl),
+                    "limit_tp1": fmt_price(l_tp1),
+                    "limit_tp2": fmt_price(l_tp2),
+                    "limit_tp": fmt_price(l_tp),
+                    "risk_pct": f"{((l_risk / l_entry) * 100):.2f}%",
+                    "reward_pct": f"{(((l_tp - l_entry) / l_entry) * 100):.2f}%",
+                    "dist_pct": f"{dist_to_ob_pct:.1f}%"
+                }
+        elif signal_type == "SELL / SHORT" and bear_ob_1h and bear_ob_1h['bottom'] > entry:
+            dist_to_ob_pct = ((bear_ob_1h['bottom'] - entry) / entry) * 100
+            if dist_to_ob_pct >= 2.0:
+                l_entry = bear_ob_1h['bottom']
+                l_sl = sl
+                l_risk = l_sl - l_entry
+                l_tp1 = l_entry - (l_risk * 1.5)
+                l_tp2 = l_entry - (l_risk * 2.0)
+                l_tp = l_entry - (l_risk * 3.0)
+                limit_setup = {
+                    "limit_entry": fmt_price(l_entry),
+                    "raw_limit_entry": l_entry,
+                    "limit_sl": fmt_price(l_sl),
+                    "limit_tp1": fmt_price(l_tp1),
+                    "limit_tp2": fmt_price(l_tp2),
+                    "limit_tp": fmt_price(l_tp),
+                    "risk_pct": f"{((l_risk / l_entry) * 100):.2f}%",
+                    "reward_pct": f"{(((l_entry - l_tp) / l_entry) * 100):.2f}%",
+                    "dist_pct": f"{dist_to_ob_pct:.1f}%"
+                }
+
+        if signal_type in ["BUY / LONG", "SELL / SHORT"]:
+            if limit_setup:
+                action_status = "LIMIT"
+                action_label = f"SET LIMIT @ ${limit_setup['limit_entry']}"
+            else:
+                action_status = "READY"
+                action_label = "READY TO ENTER NOW"
 
     risk_pct = 0.0
     reward_pct = 0.0
-    if signal_type == "BUY / LONG":
+    if signal_type == "BUY / LONG" and entry > 0 and sl > 0 and tp > 0:
         risk_pct = ((entry - sl) / entry) * 100
         reward_pct = ((tp - entry) / entry) * 100
-    elif signal_type == "SELL / SHORT":
+    elif signal_type == "SELL / SHORT" and entry > 0 and sl > 0 and tp > 0:
         risk_pct = ((sl - entry) / entry) * 100
         reward_pct = ((entry - tp) / entry) * 100
 
-    def fmt(val):
-        if val >= 1000:
-            return f"{val:,.2f}"
-        elif val >= 1:
-            return f"{val:.4f}"
-        elif val >= 0.0001:
-            return f"{val:.6f}"
-        else:
-            return f"{val:.8f}"
-
-    limit_setup = None
-    if signal_type == "BUY / LONG" and bull_ob_1h and bull_ob_1h['top'] < entry:
-        dist_to_ob_pct = ((entry - bull_ob_1h['top']) / entry) * 100
-        if dist_to_ob_pct >= 2.0:
-            l_entry = bull_ob_1h['top']
-            l_sl = sl
-            l_risk = l_entry - l_sl
-            l_tp1 = l_entry + (l_risk * 1.5)
-            l_tp2 = l_entry + (l_risk * 2.0)
-            l_tp = l_entry + (l_risk * 3.0)
-            limit_setup = {
-                "limit_entry": fmt(l_entry),
-                "raw_limit_entry": l_entry,
-                "limit_sl": fmt(l_sl),
-                "limit_tp1": fmt(l_tp1),
-                "limit_tp2": fmt(l_tp2),
-                "limit_tp": fmt(l_tp),
-                "risk_pct": f"{((l_risk / l_entry) * 100):.2f}%",
-                "reward_pct": f"{(((l_tp - l_entry) / l_entry) * 100):.2f}%",
-                "dist_pct": f"{dist_to_ob_pct:.1f}%"
-            }
-    elif signal_type == "SELL / SHORT" and bear_ob_1h and bear_ob_1h['bottom'] > entry:
-        dist_to_ob_pct = ((bear_ob_1h['bottom'] - entry) / entry) * 100
-        if dist_to_ob_pct >= 2.0:
-            l_entry = bear_ob_1h['bottom']
-            l_sl = sl
-            l_risk = l_sl - l_entry
-            l_tp1 = l_entry - (l_risk * 1.5)
-            l_tp2 = l_entry - (l_risk * 2.0)
-            l_tp = l_entry - (l_risk * 3.0)
-            limit_setup = {
-                "limit_entry": fmt(l_entry),
-                "raw_limit_entry": l_entry,
-                "limit_sl": fmt(l_sl),
-                "limit_tp1": fmt(l_tp1),
-                "limit_tp2": fmt(l_tp2),
-                "limit_tp": fmt(l_tp),
-                "risk_pct": f"{((l_risk / l_entry) * 100):.2f}%",
-                "reward_pct": f"{(((l_entry - l_tp) / l_entry) * 100):.2f}%",
-                "dist_pct": f"{dist_to_ob_pct:.1f}%"
-            }
-
-    if anchored_signal and anchored_signal.get("limit_setup"):
-        limit_setup = anchored_signal["limit_setup"]
-
-    action_status = "MONITORING"
-    action_label = "Monitoring Structure"
-    if signal_type in ["BUY / LONG", "SELL / SHORT"]:
-        if limit_setup:
-            action_status = "LIMIT"
-            action_label = f"SET LIMIT @ ${limit_setup['limit_entry']}"
-        else:
-            action_status = "READY"
-            action_label = "READY TO ENTER NOW"
-
     return {
         "symbol": symbol,
-        "current_price": fmt(current_price),
+        "current_price": fmt_price(current_price),
         "raw_price": current_price,
         "signal": signal_type,
         "tier_badge": tier_badge,
@@ -576,21 +622,21 @@ def analyze_symbol(symbol, anchored_signal=None):
         "order_block_1h": ob_info_str,
         "rsi_daily": round(rsi_daily, 1),
         "rsi_1h": round(rsi_1h, 1),
-        "ema_20": fmt(ema_20),
-        "ema_50": fmt(ema_50),
+        "ema_20": fmt_price(ema_20),
+        "ema_50": fmt_price(ema_50),
         "ema_status": "BULLISH (20>50)" if ema_bullish else "BEARISH (20<50)",
-        "daily_support": fmt(nearest_support),
-        "daily_resistance": fmt(nearest_resistance),
+        "daily_support": fmt_price(nearest_support),
+        "daily_resistance": fmt_price(nearest_resistance),
         "vol_ratio": round(vol_proj_ratio, 2),
-        "entry": fmt(entry),
+        "entry": fmt_price(entry),
         "raw_entry": entry,
-        "stop_loss": fmt(sl) if sl > 0 else "-",
+        "stop_loss": fmt_price(sl) if sl > 0 else "-",
         "raw_sl": sl,
-        "tp_1": fmt(tp1) if tp1 > 0 else "-",
+        "tp_1": fmt_price(tp1) if tp1 > 0 else "-",
         "raw_tp1": tp1,
-        "tp_2": fmt(tp2) if tp2 > 0 else "-",
+        "tp_2": fmt_price(tp2) if tp2 > 0 else "-",
         "raw_tp2": tp2,
-        "take_profit_1_3": fmt(tp) if tp > 0 else "-",
+        "take_profit_1_3": fmt_price(tp) if tp > 0 else "-",
         "raw_tp": tp,
         "risk_pct": f"{risk_pct:.2f}%" if risk_pct > 0 else "-",
         "reward_pct": f"{reward_pct:.2f}%" if reward_pct > 0 else "-",
@@ -601,7 +647,7 @@ def analyze_symbol(symbol, anchored_signal=None):
         "reasons": reasons
     }
 
-def update_trade_history(actionable_signals):
+def check_and_resolve_open_trades():
     history_data = {
         "total_signals": 0,
         "wins": 0,
@@ -619,48 +665,14 @@ def update_trade_history(actionable_signals):
             pass
 
     existing_signals = history_data.get("signals", [])
-    existing_keys = {f"{s['symbol']}_{s['date']}_{s['type']}" for s in existing_signals}
-    current_ts = int(datetime.now(timezone.utc).timestamp() * 1000)
-    today_str = datetime.now().strftime('%Y-%m-%d')
-
-    for act in actionable_signals:
-        sig_type = act["signal"]
-        key = f"{act['symbol']}_{today_str}_{sig_type}"
-        if key not in existing_keys:
-            existing_signals.append({
-                "id": len(existing_signals) + 1,
-                "symbol": act["symbol"],
-                "type": sig_type,
-                "setup": act["setup"],
-                "date": today_str,
-                "timestamp": current_ts,
-                "entry": act["raw_entry"],
-                "entry_str": act["entry"],
-                "sl": act["raw_sl"],
-                "sl_str": act["stop_loss"],
-                "tp1": act.get("raw_tp1", 0),
-                "tp1_str": act.get("tp_1", "-"),
-                "tp2": act.get("raw_tp2", 0),
-                "tp2_str": act.get("tp_2", "-"),
-                "tp": act["raw_tp"],
-                "tp_str": act["take_profit_1_3"],
-                "limit_setup": act.get("limit_setup"),
-                "status": "OPEN",
-                "outcome_pnl": 0.0
-            })
-            send_telegram_new_signal(act)
-        else:
-            for s in existing_signals:
-                if s["symbol"] == act["symbol"] and s.get("status") == "OPEN":
-                    if not s.get("limit_setup") and act.get("limit_setup"):
-                        s["limit_setup"] = act.get("limit_setup")
-
+    
     for s in existing_signals:
-        if s["status"] == "OPEN":
+        if s.get("status") == "OPEN":
             sig_ts = s.get("timestamp", 0)
             kl = get_klines(s["symbol"], interval="1h", limit=50)
             if kl:
-                future_bars = [bar for bar in kl if bar[0] > sig_ts]
+                # Include candle at or after signal creation (with 1h buffer)
+                future_bars = [bar for bar in kl if (bar[0] + 3600000) >= sig_ts]
                 for bar in future_bars:
                     high = float(bar[2])
                     low = float(bar[3])
@@ -719,15 +731,23 @@ def update_trade_history(actionable_signals):
                                 send_telegram_resolution(s, "LOSS_SL")
                             break
 
-    closed = [s for s in existing_signals if s["status"] in ["WIN (1:3 TP Hit)", "LOSS (SL Hit)"]]
-    wins = len([s for s in existing_signals if "WIN" in s["status"]])
-    losses = len([s for s in existing_signals if "LOSS" in s["status"]])
-    pending = len([s for s in existing_signals if s["status"] == "OPEN"])
-    
+    recalculate_history_stats(history_data)
+    with open(HISTORY_FILE, "w", encoding="utf-8") as f:
+        json.dump(history_data, f, indent=2)
+
+    return history_data
+
+def recalculate_history_stats(history_data):
+    existing_signals = history_data.get("signals", [])
+    closed = [s for s in existing_signals if s.get("status") != "OPEN"]
+    wins = len([s for s in existing_signals if "WIN" in s.get("status", "")])
+    losses = len([s for s in existing_signals if "LOSS" in s.get("status", "")])
+    pending = len([s for s in existing_signals if s.get("status") == "OPEN"])
     total_closed = len(closed)
     win_rate = (wins / total_closed * 100) if total_closed > 0 else 0.0
+    net_r = round(sum(s.get("outcome_pnl", 0.0) for s in existing_signals), 1)
 
-    history_data = {
+    history_data.update({
         "updated_at": datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
         "total_signals": len(existing_signals),
         "total_closed": total_closed,
@@ -735,10 +755,59 @@ def update_trade_history(actionable_signals):
         "losses": losses,
         "pending": pending,
         "win_rate_pct": round(win_rate, 1),
-        "net_pnl_r": round((wins * 3.0) - (losses * 1.0), 1),
+        "net_pnl_r": net_r,
         "signals": existing_signals
-    }
+    })
+    return history_data
 
+def record_new_signals_to_history(actionable_signals, history_data, open_symbols_before_scan):
+    existing_signals = history_data.get("signals", [])
+    current_ts = int(datetime.now(timezone.utc).timestamp() * 1000)
+    today_str = datetime.now().strftime('%Y-%m-%d')
+    existing_keys = {f"{s['symbol']}_{s['date']}_{s['type']}" for s in existing_signals}
+
+    for act in actionable_signals:
+        sym = act["symbol"]
+        sig_type = act["signal"]
+        
+        # If already open, do not duplicate!
+        if sym in open_symbols_before_scan:
+            for s in existing_signals:
+                if s["symbol"] == sym and s.get("status") == "OPEN":
+                    if not s.get("limit_setup") and act.get("limit_setup"):
+                        s["limit_setup"] = act.get("limit_setup")
+            continue
+            
+        # Fresh signal
+        key = f"{sym}_{today_str}_{sig_type}"
+        if key not in existing_keys:
+            new_item = {
+                "id": len(existing_signals) + 1,
+                "symbol": sym,
+                "type": sig_type,
+                "tier_badge": act.get("tier_badge", "⭐ TIER 1: DAILY SETUP"),
+                "setup": act["setup"],
+                "date": today_str,
+                "timestamp": current_ts,
+                "entry": act["raw_entry"],
+                "entry_str": act["entry"],
+                "sl": act["raw_sl"],
+                "sl_str": act["stop_loss"],
+                "tp1": act.get("raw_tp1", 0),
+                "tp1_str": act.get("tp_1", "-"),
+                "tp2": act.get("raw_tp2", 0),
+                "tp2_str": act.get("tp_2", "-"),
+                "tp": act["raw_tp"],
+                "tp_str": act["take_profit_1_3"],
+                "limit_setup": act.get("limit_setup"),
+                "status": "OPEN",
+                "outcome_pnl": 0.0
+            }
+            existing_signals.append(new_item)
+            existing_keys.add(key)
+            send_telegram_new_signal(act)
+
+    recalculate_history_stats(history_data)
     with open(HISTORY_FILE, "w", encoding="utf-8") as f:
         json.dump(history_data, f, indent=2)
 
@@ -756,23 +825,21 @@ def get_top_pairs():
     ]
 
 def scan_all_pairs():
-    pairs = get_top_pairs()
+    # 1. Resolve open trades against latest candles & send TP/SL Telegram alerts
+    history_data = check_and_resolve_open_trades()
+    open_signals_map = {s["symbol"]: s for s in history_data.get("signals", []) if s.get("status") == "OPEN"}
+    open_symbols_before_scan = set(open_signals_map.keys())
 
-    # Load active open signals to anchor entries and prevent shifting targets
-    open_signals_map = {}
-    if os.path.exists(HISTORY_FILE):
-        try:
-            with open(HISTORY_FILE, "r", encoding="utf-8") as f:
-                h_data = json.load(f)
-                for s in h_data.get("signals", []):
-                    if s.get("status") == "OPEN":
-                        open_signals_map[s["symbol"]] = s
-        except Exception:
-            pass
+    # 2. Get pairs to scan (ensure all open trades are included)
+    pairs = get_top_pairs()
+    for s_sym in open_symbols_before_scan:
+        if s_sym not in pairs:
+            pairs.append(s_sym)
 
     print("=" * 95)
     print(" 🎯 BINANCE HYBRID SMC ENGINE (TIER 1: DAILY SETUPS + TIER 2: SNIPER EXTREMES)")
     print(f" Timestamp: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} (Local)")
+    print(f" Active Open Positions Monitored: {len(open_signals_map)}")
     print("=" * 95)
 
     results = []
@@ -790,7 +857,8 @@ def scan_all_pairs():
     actionable = [r for r in results if r["signal"] in ["BUY / LONG", "SELL / SHORT"]]
     watchlist = [r for r in results if r["signal"] == "WATCHLIST"]
 
-    history = update_trade_history(actionable)
+    # 3. Record any brand new signals into history
+    history = record_new_signals_to_history(actionable, history_data, open_symbols_before_scan)
 
     print("-" * 95)
     print(f" 🚀 ACTIVE TRADE SIGNALS (1:3 R:R): {len(actionable)} Found")
@@ -1268,16 +1336,23 @@ def generate_html_dashboard(data, output_path):
                     const col = document.createElement('div');
                     col.className = "col-12 col-md-6 col-lg-4 signal-col";
                     col.id = `card-col-${{sig.symbol}}`;
-                    const initialCat = sig.limit_setup ? 'LIMIT' : 'READY';
-                    col.setAttribute('data-category', initialCat);
+                    let initialCat = "READY";
+                    let initialBorder = "#0ecb81";
+                    let initialBadge = '<span class="badge bg-success text-white py-1 px-2"><i class="fa-solid fa-circle-check me-1"></i>🟢 GANNA PULUWAN</span>';
+                    let initialDesc = '<span class="text-success fw-bold">Price in Entry Zone</span>';
 
-                    let initialBorder = sig.limit_setup ? '#f0b90b' : '#0ecb81';
-                    let initialBadge = sig.limit_setup ? 
-                        '<span class="badge bg-warning text-dark py-1 px-2"><i class="fa-solid fa-clock me-1"></i>🟡 SET LIMIT ORDER</span>' :
-                        '<span class="badge bg-success text-white py-1 px-2"><i class="fa-solid fa-circle-check me-1"></i>🟢 GANNA PULUWAN</span>';
-                    let initialDesc = sig.limit_setup ?
-                        `<span class="text-warning fw-bold">Pending Limit @ $${{sig.limit_setup.limit_entry}}</span>` :
-                        '<span class="text-success fw-bold">Price in Entry Zone</span>';
+                    if (sig.limit_setup) {{
+                        initialCat = "LIMIT";
+                        initialBorder = "#f0b90b";
+                        initialBadge = '<span class="badge bg-warning text-dark py-1 px-2"><i class="fa-solid fa-clock me-1"></i>🟡 SET LIMIT ORDER</span>';
+                        initialDesc = `<span class="text-warning fw-bold">Pending Limit @ $${{sig.limit_setup.limit_entry}}</span>`;
+                    }} else if (sig.action_status === 'RUNNING') {{
+                        initialCat = "RUNNING";
+                        initialBorder = "#0dcaf0";
+                        initialBadge = '<span class="badge bg-info text-dark py-1 px-2"><i class="fa-solid fa-rocket me-1"></i>🚀 RUNNING IN PROFIT</span>';
+                        initialDesc = `<span class="text-info fw-bold">${{sig.action_label || 'Running in Profit'}}</span>`;
+                    }}
+                    col.setAttribute('data-category', initialCat);
 
                     const marketPlanHeader = sig.limit_setup ? `
                         <div class="d-flex align-items-center gap-2 mb-2 mt-1">
@@ -1387,6 +1462,21 @@ def generate_html_dashboard(data, output_path):
                     `;
                     container.appendChild(col);
                 }});
+
+                let initReady = 0, initLimit = 0, initRunning = 0;
+                active.forEach(sig => {{
+                    if (sig.limit_setup) initLimit++;
+                    else if (sig.action_status === 'RUNNING') initRunning++;
+                    else initReady++;
+                }});
+                const elAll = document.getElementById('cnt-all');
+                const elReady = document.getElementById('cnt-ready');
+                const elLimit = document.getElementById('cnt-limit');
+                const elRunning = document.getElementById('cnt-running');
+                if (elAll) elAll.innerText = active.length;
+                if (elReady) elReady.innerText = initReady;
+                if (elLimit) elLimit.innerText = initLimit;
+                if (elRunning) elRunning.innerText = initRunning;
             }}
 
             // Watchlist
