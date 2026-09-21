@@ -67,33 +67,77 @@ def send_telegram_new_signal(sig):
     icon = "🟢" if is_long else "🔴"
     action = "BUY / LONG 📈" if is_long else "SELL / SHORT 📉"
     
-    limit_text = ""
-    if sig.get("limit_setup"):
-        ls = sig["limit_setup"]
-        limit_text = (
-            f"\n🟡 <b>RECOMMENDED SMC LIMIT ORDER:</b>\n"
-            f"👉 <b>Limit Entry:</b> <code>${ls.get('limit_entry')}</code> (Wait for Retest)\n"
-            f"🛑 <b>Limit SL:</b> <code>${ls.get('limit_sl')}</code>\n"
-            f"🏆 <b>Limit TP1:</b> <code>${ls.get('limit_tp1', '-')}</code>\n"
-            f"🏆 <b>Limit TP3:</b> <code>${ls.get('limit_tp')}</code>\n"
+    ls = sig.get("limit_setup")
+    action_status = sig.get("action_status", "READY")
+    
+    if ls:
+        status_tag = "🟡 <b>PENDING LIMIT ORDER (Wait for Retest)</b>"
+        header = f"🟡 <b>NEW SMC LIMIT SIGNAL</b> {icon}\n👉 <b>Pending Limit Order (Retest Pullback)</b>"
+        advice = f"💡 <b>උපදෙස:</b> Binance එකේ <b>{'Buy Limit' if is_long else 'Sell Limit'} Order</b> එකක් දාන්න <code>${ls.get('limit_entry')}</code> ට!"
+        
+        body = (
+            f"━━━━━━━━━━━━━━━━━━━━\n"
+            f"🪙 <b>PAIR:</b> #{sig.get('symbol')}\n"
+            f"⚡ <b>ACTION:</b> <b>{action}</b>\n"
+            f"📊 <b>STATUS:</b> {status_tag}\n"
+            f"⭐ <b>TIER:</b> {sig.get('tier_badge', 'TIER 1')}\n"
+            f"📐 <b>SETUP:</b> {sig.get('setup', '-')}\n"
+            f"━━━━━━━━━━━━━━━━━━━━\n"
+            f"🟡 <b>RECOMMENDED SMC LIMIT ORDER:</b>\n"
+            f"👉 <b>Limit Entry:</b> <code>${ls.get('limit_entry')}</code> (Pullback {ls.get('dist_pct', '-')})\n"
+            f"🛑 <b>Limit Safe SL:</b> <code>${ls.get('limit_sl')}</code> (-{ls.get('risk_pct', '-')})\n"
+            f"🏆 <b>Limit TP1:</b> <code>${ls.get('limit_tp1', '-')}</code> (50% + SL to BE)\n"
+            f"🏆 <b>Limit TP2:</b> <code>${ls.get('limit_tp2', '-')}</code>\n"
+            f"🏆 <b>Limit TP3:</b> <code>${ls.get('limit_tp')}</code> (+{ls.get('reward_pct', '-')}) [1:3 R:R]\n"
+            f"━━━━━━━━━━━━━━━━━━━━\n"
+            f"🎯 <b>Instant Market Plan (Alternative):</b>\n"
+            f"• Market Now: <code>${sig.get('entry')}</code> | SL: <code>${sig.get('stop_loss')}</code> | TP3: <code>${sig.get('take_profit_1_3')}</code>\n"
+        )
+    elif action_status == "RUNNING":
+        status_tag = "🚀 <b>RUNNING IN PROFIT</b>"
+        header = f"🚀 <b>ACTIVE SMC TRADE RUNNING</b> {icon}\n👉 <b>Running In Profit (Do Not Chase)</b>"
+        advice = "⚠️ <b>උපදෙස:</b> මේ Trade එක දැනටමත් ලාභ ලබමින් දුවයි. දැන් අලුතෙන් Chase කරන්න එපා!"
+        
+        body = (
+            f"━━━━━━━━━━━━━━━━━━━━\n"
+            f"🪙 <b>PAIR:</b> #{sig.get('symbol')}\n"
+            f"⚡ <b>ACTION:</b> <b>{action}</b>\n"
+            f"📊 <b>STATUS:</b> {status_tag}\n"
+            f"⭐ <b>TIER:</b> {sig.get('tier_badge', 'TIER 1')}\n"
+            f"📐 <b>SETUP:</b> {sig.get('setup', '-')}\n"
+            f"━━━━━━━━━━━━━━━━━━━━\n"
+            f"🎯 <b>ENTRY:</b> <code>${sig.get('entry')}</code>\n"
+            f"📈 <b>LIVE PRICE:</b> <code>${sig.get('current_price')}</code> ({sig.get('action_label', '')})\n"
+            f"🛑 <b>SAFE SL:</b> <code>${sig.get('stop_loss')}</code> (-{sig.get('risk_pct', '-')})\n"
+            f"🏆 <b>TP 1:</b> <code>${sig.get('tp_1', '-')}</code> | <b>TP 3:</b> <code>${sig.get('take_profit_1_3')}</code>\n"
+        )
+    else:
+        status_tag = "🟢 <b>READY NOW (Ganna Puluwan!)</b>"
+        header = f"🚀 <b>NEW SMC TRADE SIGNAL</b> {icon}\n👉 <b>READY NOW (Ganna Puluwan!)</b>"
+        advice = f"⚡ <b>උපදෙස:</b> මිල දැන් තියෙන්නේ Entry Zone එකේ. <b>දැන්ම Market Entry</b> එකක් ගන්න පුළුවන්!"
+        
+        body = (
+            f"━━━━━━━━━━━━━━━━━━━━\n"
+            f"🪙 <b>PAIR:</b> #{sig.get('symbol')}\n"
+            f"⚡ <b>ACTION:</b> <b>{action}</b>\n"
+            f"📊 <b>STATUS:</b> {status_tag}\n"
+            f"⭐ <b>TIER:</b> {sig.get('tier_badge', 'TIER 1')}\n"
+            f"📐 <b>SETUP:</b> {sig.get('setup', '-')}\n"
+            f"━━━━━━━━━━━━━━━━━━━━\n"
+            f"🎯 <b>MARKET ENTRY:</b> <code>${sig.get('entry')}</code> (Now in Zone)\n"
+            f"🛑 <b>SAFE SL:</b> <code>${sig.get('stop_loss')}</code> (-{sig.get('risk_pct', '-')})\n"
+            f"🏆 <b>TP 1 (1:1.5):</b> <code>${sig.get('tp_1', '-')}</code> (50% Book + SL to BE)\n"
+            f"🏆 <b>TP 2 (1:2.0):</b> <code>${sig.get('tp_2', '-')}</code>\n"
+            f"🏆 <b>TP 3 (1:3.0):</b> <code>${sig.get('take_profit_1_3')}</code> (+{sig.get('reward_pct', '-')}) [1:3 R:R]\n"
         )
 
     reasons_bullets = "\n".join([f"• {r}" for r in sig.get("reasons", [])[:3]])
 
     msg = (
-        f"🚀 <b>NEW SMC TRADE SIGNAL</b> {icon}\n"
+        f"{header}\n"
+        f"{body}"
         f"━━━━━━━━━━━━━━━━━━━━\n"
-        f"🪙 <b>PAIR:</b> #{sig.get('symbol')}\n"
-        f"⚡ <b>ACTION:</b> <b>{action}</b>\n"
-        f"⭐ <b>TIER:</b> {sig.get('tier_badge', 'TIER 1')}\n"
-        f"📐 <b>SETUP:</b> {sig.get('setup', '-')}\n"
-        f"━━━━━━━━━━━━━━━━━━━━\n"
-        f"🎯 <b>MARKET ENTRY:</b> <code>${sig.get('entry')}</code>\n"
-        f"🛑 <b>SAFE SL:</b> <code>${sig.get('stop_loss')}</code> (-{sig.get('risk_pct', '-')})\n"
-        f"🏆 <b>TP 1 (1:1.5):</b> <code>${sig.get('tp_1', '-')}</code> (50% + SL to BE)\n"
-        f"🏆 <b>TP 2 (1:2.0):</b> <code>${sig.get('tp_2', '-')}</code>\n"
-        f"🏆 <b>TP 3 (1:3.0):</b> <code>${sig.get('take_profit_1_3')}</code> (+{sig.get('reward_pct', '-')})\n"
-        f"{limit_text}"
+        f"{advice}\n\n"
         f"📦 <b>1H Order Block:</b> {sig.get('order_block_1h', 'None')}\n"
         f"📊 <b>RSI:</b> Daily {sig.get('rsi_daily', '-')} | 1H {sig.get('rsi_1h', '-')}\n\n"
         f"💡 <b>Key Confirmations:</b>\n{reasons_bullets}\n\n"
