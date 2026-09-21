@@ -1,0 +1,111 @@
+//@version=5
+indicator("Binance SMC Pro: Daily S&R + 1H OB + 1H CHoCH (1:3 RR)", overlay=true, max_lines_count=500, max_boxes_count=500, max_labels_count=500)
+
+// ==========================================
+// 1. INPUT PARAMETERS
+// ==========================================
+rsiOversold   = input.int(22, "Extreme Oversold Level", group="RSI Filters")
+rsiOverbought = input.int(78, "Extreme Overbought Level", group="RSI Filters")
+rrRatio       = input.float(3.0, "Risk to Reward Ratio (1:X)", minval=1.0, maxval=10.0, group="Trade Management")
+srWindow      = input.int(3, "Daily Line S&R Pivot Window", group="Support & Resistance")
+
+// ==========================================
+// 2. INDICATORS
+// ==========================================
+rsi = ta.rsi(close, 14)
+ema20 = ta.ema(close, 20)
+ema50 = ta.ema(close, 50)
+plot(ema20, "20 EMA", color=color.orange, linewidth=2)
+plot(ema50, "50 EMA", color=color.blue, linewidth=2)
+
+// Daily Line S&R (Close prices only)
+pHighClose = ta.pivothigh(close, srWindow, srWindow)
+pLowClose  = ta.pivotlow(close, srWindow, srWindow)
+
+var float lastRes = na
+var float lastSup = na
+if not na(pHighClose)
+    lastRes := pHighClose
+if not na(pLowClose)
+    lastSup := pLowClose
+
+plot(lastRes, "Daily Line Resistance", color=color.red, style=plot.style_circles, linewidth=1)
+plot(lastSup, "Daily Line Support", color=color.green, style=plot.style_circles, linewidth=1)
+
+// ==========================================
+// 3. 1-HOUR ORDER BLOCKS & CHoCH (SMC)
+// ==========================================
+h1_open  = request.security(syminfo.tickerid, "60", open)
+h1_high  = request.security(syminfo.tickerid, "60", high)
+h1_low   = request.security(syminfo.tickerid, "60", low)
+h1_close = request.security(syminfo.tickerid, "60", close)
+
+// 1H Swing Points
+h1_pHigh = ta.pivothigh(h1_high, 2, 2)
+h1_pLow  = ta.pivotlow(h1_low, 2, 2)
+
+var float last1H_HL = na
+var float last1H_LH = na
+var float last1H_Peak = na
+var float last1H_Trough = na
+
+if not na(h1_pHigh)
+    last1H_Peak := h1_pHigh
+if not na(h1_pLow)
+    last1H_HL := h1_pLow
+    last1H_Trough := h1_pLow
+
+// CHoCH Confirmation Conditions
+// Bearish CHoCH: Price breaks below recent 1H Higher Low
+bearishCHoCH = not na(last1H_HL) and ta.crossunder(h1_close, last1H_HL)
+// Bullish CHoCH: Price breaks above recent 1H Lower High
+bullishCHoCH = not na(last1H_Peak) and ta.crossover(h1_close, last1H_Peak)
+
+// ==========================================
+// 4. SIGNAL TRIGGERS (RSI Extreme + 1H CHoCH)
+// ==========================================
+// Only trigger SHORT when RSI was extreme overbought AND 1H Bearish CHoCH is confirmed!
+shortTrigger = (rsi >= rsiOverbought or rsi[1] >= rsiOverbought or rsi[2] >= rsiOverbought) and bearishCHoCH
+// Only trigger LONG when RSI was extreme oversold AND 1H Bullish CHoCH is confirmed!
+longTrigger  = (rsi <= rsiOversold or rsi[1] <= rsiOversold or rsi[2] <= rsiOversold) and bullishCHoCH
+
+var bool inLong = false
+var bool inShort = false
+buySignal  = longTrigger and not inLong
+sellSignal = shortTrigger and not inShort
+
+if buySignal
+    inLong := true
+    inShort := false
+if sellSignal
+    inShort := true
+    inLong := false
+
+// ==========================================
+// 5. SAFE STOP LOSS (Above HH / Below LL) & 1:3 TP
+// ==========================================
+var float longEntry = na
+var float longSL    = na
+var float longTP    = na
+var float shortEntry = na
+var float shortSL    = na
+var float shortTP    = na
+
+if buySignal
+    longEntry := close
+    safeLow = not na(last1H_Trough) ? last1H_Trough : (not na(lastSup) ? lastSup : longEntry * 0.97)
+    longSL := safeLow * 0.985 // 1.5% below swing low
+    risk = longEntry - longSL
+    longTP := longEntry + (risk * rrRatio)
+    label.new(bar_index, low, text="🚀 CONFIRMED LONG (1H CHoCH)\nEntry: " + str.tostring(longEntry, "#.####") + "\nSL: " + str.tostring(longSL, "#.####") + "\nTP (1:3): " + str.tostring(longTP, "#.####"), color=color.green, textcolor=color.white, style=label.style_label_up)
+
+if sellSignal
+    shortEntry := close
+    safeHigh = not na(last1H_Peak) ? last1H_Peak : (not na(lastRes) ? lastRes : shortEntry * 1.03)
+    shortSL := safeHigh * 1.015 // 1.5% above swing high (HH)
+    risk = shortSL - shortEntry
+    shortTP := shortEntry - (risk * rrRatio)
+    label.new(bar_index, high, text="🔻 CONFIRMED SHORT (1H CHoCH)\nEntry: " + str.tostring(shortEntry, "#.####") + "\nSL: " + str.tostring(shortSL, "#.####") + "\nTP (1:3): " + str.tostring(shortTP, "#.####"), color=color.red, textcolor=color.white, style=label.style_label_down)
+
+alertcondition(buySignal, title="1H CHoCH Confirmed Long (1:3 RR)", message="BULLISH CHoCH LONG: {{ticker}} | Price: {{close}} | TP (1:3): check chart")
+alertcondition(sellSignal, title="1H CHoCH Confirmed Short (1:3 RR)", message="BEARISH CHoCH SHORT: {{ticker}} | Price: {{close}} | TP (1:3): check chart")
