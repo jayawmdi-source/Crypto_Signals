@@ -1,10 +1,10 @@
 {
-  "updated_at": "2026-09-21 20:18:14",
-  "total_signals": 18,
+  "updated_at": "2026-09-21 23:26:53",
+  "total_signals": 19,
   "total_closed": 5,
   "wins": 3,
   "losses": 2,
-  "pending": 13,
+  "pending": 14,
   "win_rate_pct": 60.0,
   "net_pnl_r": 7.0,
   "signals": [
@@ -465,6 +465,28 @@
         "reward_pct": "19.64%",
         "dist_pct": "4.1%"
       },
+      "status": "OPEN",
+      "outcome_pnl": 0.0
+    },
+    {
+      "id": 19,
+      "symbol": "ICPUSDT",
+      "type": "BUY / LONG",
+      "tier_badge": "\u2b50 TIER 1: DAILY SETUP",
+      "setup": "S/R Flip Breakout & Retest",
+      "date": "2026-09-21",
+      "timestamp": 1790033212654,
+      "entry": 3.03,
+      "entry_str": "3.0300",
+      "sl": 2.944165,
+      "sl_str": "2.9442",
+      "tp1": 3.1587524999999994,
+      "tp1_str": "3.1588",
+      "tp2": 3.2016699999999996,
+      "tp2_str": "3.2017",
+      "tp": 3.2875049999999995,
+      "tp_str": "3.2875",
+      "limit_setup": null,
       "status": "OPEN",
       "outcome_pnl": 0.0
     }
