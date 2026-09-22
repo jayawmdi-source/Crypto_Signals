@@ -1,12 +1,12 @@
 {
-  "updated_at": "2026-09-22 15:41:33",
-  "total_signals": 48,
-  "total_closed": 7,
+  "updated_at": "2026-09-22 12:15:10",
+  "total_signals": 49,
+  "total_closed": 8,
   "wins": 3,
-  "losses": 4,
+  "losses": 5,
   "pending": 41,
-  "win_rate_pct": 42.9,
-  "net_pnl_r": 5.0,
+  "win_rate_pct": 37.5,
+  "net_pnl_r": 4.0,
   "signals": [
     {
       "id": 1,
@@ -669,8 +669,10 @@
       "tp": 0.10613750000000001,
       "tp_str": "0.106138",
       "limit_setup": null,
-      "status": "OPEN",
-      "outcome_pnl": 0.0
+      "status": "LOSS (SL Hit)",
+      "outcome_pnl": -1.0,
+      "resolved_at": "2026-09-22 12:15",
+      "notified_loss": true
     },
     {
       "id": 29,
@@ -868,7 +870,9 @@
       "tp_str": "0.474854",
       "limit_setup": null,
       "status": "OPEN",
-      "outcome_pnl": 0.0
+      "outcome_pnl": 0.0,
+      "tp1_hit": true,
+      "notified_tp1": true
     },
     {
       "id": 42,
@@ -1204,6 +1208,38 @@
         "risk_pct": "4.90%",
         "reward_pct": "14.69%",
         "dist_pct": "12.2%"
+      },
+      "status": "OPEN",
+      "outcome_pnl": 0.0
+    },
+    {
+      "id": 49,
+      "symbol": "ONEUSDT",
+      "type": "SELL / SHORT",
+      "tier_badge": "\ud83d\udd25 TIER 2: SNIPER EXTREME",
+      "setup": "Extreme Overbought (RSI > 80) + 1H Bearish CHoCH",
+      "date": "2026-09-22",
+      "timestamp": 1790079309894,
+      "entry": 0.003592,
+      "entry_str": "0.003592",
+      "sl": 0.0048175,
+      "sl_str": "0.004817",
+      "tp1": 0.0017537500000000008,
+      "tp1_str": "0.001754",
+      "tp2": 0.001141000000000001,
+      "tp2_str": "0.001141",
+      "tp": -8.449999999999864e-05,
+      "tp_str": "-",
+      "limit_setup": {
+        "limit_entry": "0.004150",
+        "raw_limit_entry": 0.00415,
+        "limit_sl": "0.004817",
+        "limit_tp1": "0.003149",
+        "limit_tp2": "0.002815",
+        "limit_tp": "0.002148",
+        "risk_pct": "16.08%",
+        "reward_pct": "48.25%",
+        "dist_pct": "15.5%"
       },
       "status": "OPEN",
       "outcome_pnl": 0.0
