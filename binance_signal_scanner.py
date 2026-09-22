@@ -365,7 +365,7 @@ def detect_1h_choch(klines_1h):
         "status": "Bearish CHoCH Confirmed" if has_bearish_choch else ("Bullish CHoCH Confirmed" if has_bullish_choch else "Waiting for CHoCH")
     }
 
-def analyze_symbol(symbol, anchored_signal=None):
+def analyze_symbol(symbol, anchored_signal=None, btc_sentiment=None):
     daily_klines = get_klines(symbol, interval="1d", limit=100)
     klines_1h = get_klines(symbol, interval="1h", limit=80)
     
@@ -452,33 +452,52 @@ def analyze_symbol(symbol, anchored_signal=None):
         
         is_long = "BUY" in signal_type or "LONG" in signal_type
         diff_pct = ((current_price - entry) / entry * 100) if is_long else ((entry - current_price) / entry * 100)
+        raw_diff_pct = ((current_price - entry) / entry * 100)
         
-        if anchored_signal.get("tp1_hit"):
+        is_sl_hit = (sl > 0) and ((current_price <= sl) if is_long else (current_price >= sl))
+        is_tp_hit = (tp > 0) and ((current_price >= tp) if is_long else (current_price <= tp))
+
+        if is_sl_hit:
+            action_status = "STOPPED"
+            action_label = "SL BREACHED (Do Not Enter)"
+        elif is_tp_hit or anchored_signal.get("tp1_hit"):
             action_status = "RUNNING"
-            action_label = f"TP1 HIT (BE Locked) | Running (+{diff_pct:.2f}%)"
+            action_label = f"TP SECURED | Running (+{diff_pct:.2f}%)" if anchored_signal.get("tp1_hit") else f"TARGET HIT (+{diff_pct:.2f}%)"
         elif diff_pct > 0.75:
             action_status = "RUNNING"
             action_label = f"RUNNING IN PROFIT (+{diff_pct:.2f}%)"
         elif limit_setup:
             action_status = "LIMIT"
             action_label = f"SET LIMIT @ ${limit_setup['limit_entry']}"
-        elif diff_pct < -1.5:
+        elif abs(raw_diff_pct) <= 0.75:
             action_status = "READY"
-            action_label = f"Discount Dip ({diff_pct:.2f}%) - IN ZONE"
+            action_label = f"IN ENTRY ZONE ({raw_diff_pct:+.2f}%)"
+        elif diff_pct < 0:
+            action_status = "WARNING"
+            action_label = f"NEAR SL / CAUTION ({diff_pct:.2f}%)"
         else:
             action_status = "READY"
-            action_label = f"IN ENTRY ZONE ({diff_pct:+.2f}%)"
+            action_label = f"IN ENTRY ZONE ({raw_diff_pct:+.2f}%)"
 
         reasons.append(f"Active trade running: Entry ${fmt_price(entry)} | Live: ${fmt_price(current_price)} ({diff_pct:+.2f}%)")
         if anchored_signal.get("tp1_hit"):
             reasons.append("TP1 (1:1.5) Secured! 50% Profit locked, SL at Break-Even.")
         reasons.append(f"Trend: {'Bullish (20>50 EMA)' if ema_bullish else 'Bearish (20<50 EMA)'} | Daily RSI: {rsi_daily:.1f}")
-        if bull_ob_1h:
-            ob_info_str = f"Bullish 1H OB [${fmt_price(bull_ob_1h['bottom'])} - ${fmt_price(bull_ob_1h['top'])}]"
-            reasons.append(f"1H Demand Order Block: {ob_info_str}")
-        elif bear_ob_1h:
-            ob_info_str = f"Bearish 1H OB [${fmt_price(bear_ob_1h['bottom'])} - ${fmt_price(bear_ob_1h['top'])}]"
-            reasons.append(f"1H Supply Order Block: {ob_info_str}")
+        
+        if is_long:
+            if bull_ob_1h:
+                ob_info_str = f"Bullish 1H OB [${fmt_price(bull_ob_1h['bottom'])} - ${fmt_price(bull_ob_1h['top'])}]"
+                reasons.append(f"1H Demand Order Block: {ob_info_str}")
+            elif bear_ob_1h:
+                ob_info_str = f"Bearish 1H OB [${fmt_price(bear_ob_1h['bottom'])} - ${fmt_price(bear_ob_1h['top'])}]"
+                reasons.append(f"1H Supply Order Block: {ob_info_str}")
+        else:
+            if bear_ob_1h:
+                ob_info_str = f"Bearish 1H OB [${fmt_price(bear_ob_1h['bottom'])} - ${fmt_price(bear_ob_1h['top'])}]"
+                reasons.append(f"1H Supply Order Block: {ob_info_str}")
+            elif bull_ob_1h:
+                ob_info_str = f"Bullish 1H OB [${fmt_price(bull_ob_1h['bottom'])} - ${fmt_price(bull_ob_1h['top'])}]"
+                reasons.append(f"1H Demand Order Block: {ob_info_str}")
         if choch_data["has_bullish_choch"]:
             choch_badge = "1H CHoCH Confirmed 🟢"
         elif choch_data["has_bearish_choch"]:
@@ -493,93 +512,139 @@ def analyze_symbol(symbol, anchored_signal=None):
 
         # TIER 2: SNIPER EXTREME REVERSALS
         if is_extreme_overbought and choch_data["has_bearish_choch"]:
-            signal_type = "SELL / SHORT"
-            tier_badge = "🔥 TIER 2: SNIPER EXTREME"
-            trade_setup = "Extreme Overbought (RSI > 80) + 1H Bearish CHoCH"
-            choch_badge = "1H CHoCH Confirmed 🔴"
-            sl = choch_data["recent_high"] * 1.015
-            risk = sl - entry
-            if risk / entry < 0.025:
-                sl = entry * 1.028
+            has_demand_conflict = bull_ob_1h and (bull_ob_1h.get('is_testing') or (bull_ob_1h['bottom'] * 0.99 <= entry <= bull_ob_1h['top'] * 1.005))
+            btc_blocks_short = btc_sentiment and not btc_sentiment.get("allow_shorts", True) and symbol != "BTCUSDT"
+
+            if has_demand_conflict or btc_blocks_short:
+                signal_type = "WATCHLIST"
+                tier_badge = "WATCHLIST"
+                if has_demand_conflict:
+                    reasons.append(f"⚠️ Sniper Short Blocked: Entry sitting on 1H Bullish Demand Block [${bull_ob_1h['bottom']:.4f} - ${bull_ob_1h['top']:.4f}]")
+                if btc_blocks_short:
+                    reasons.append(f"⚠️ BTC Pump Shield: Bitcoin pumping ({btc_sentiment['reason']}), Short signals paused")
+            else:
+                signal_type = "SELL / SHORT"
+                tier_badge = "🔥 TIER 2: SNIPER EXTREME"
+                trade_setup = "Extreme Overbought (RSI > 80) + 1H Bearish CHoCH"
+                choch_badge = "1H CHoCH Confirmed 🔴"
+                sl = choch_data["recent_high"] * 1.025
                 risk = sl - entry
-            tp1 = entry - (risk * 1.5)
-            tp2 = entry - (risk * 2.0)
-            tp = entry - (risk * 3.0)
-            reasons.append(f"Extreme RSI Overbought ({rsi_daily:.1f})")
-            reasons.append(f"Confirmed 1H Bearish CHoCH below ${choch_data['key_hl']}")
-            if bear_ob_1h:
-                ob_info_str = f"Bearish 1H OB [${bear_ob_1h['bottom']:.4f} - ${bear_ob_1h['top']:.4f}]"
+                if risk / entry < 0.028:
+                    sl = entry * 1.028
+                    risk = sl - entry
+                tp1 = entry - (risk * 1.5)
+                tp2 = entry - (risk * 2.0)
+                tp = entry - (risk * 3.0)
+                reasons.append(f"Extreme RSI Overbought ({rsi_daily:.1f})")
+                reasons.append(f"Confirmed 1H Bearish CHoCH below ${choch_data['key_hl']}")
+                if bear_ob_1h:
+                    ob_info_str = f"Bearish 1H OB [${bear_ob_1h['bottom']:.4f} - ${bear_ob_1h['top']:.4f}]"
 
         elif is_extreme_oversold and choch_data["has_bullish_choch"]:
-            signal_type = "BUY / LONG"
-            tier_badge = "🔥 TIER 2: SNIPER EXTREME"
-            trade_setup = "Extreme Oversold (RSI < 20) + 1H Bullish CHoCH"
-            choch_badge = "1H CHoCH Confirmed 🟢"
-            sl = choch_data["recent_low"] * 0.985
-            risk = entry - sl
-            if risk / entry < 0.025:
-                sl = entry * 0.972
+            has_supply_conflict = bear_ob_1h and (bear_ob_1h.get('is_testing') or (bear_ob_1h['bottom'] * 0.995 <= entry <= bear_ob_1h['top'] * 1.01))
+            btc_blocks_long = btc_sentiment and not btc_sentiment.get("allow_longs", True) and symbol != "BTCUSDT"
+
+            if has_supply_conflict or btc_blocks_long:
+                signal_type = "WATCHLIST"
+                tier_badge = "WATCHLIST"
+                if has_supply_conflict:
+                    reasons.append(f"⚠️ Sniper Long Blocked: Entry inside 1H Bearish Supply Block [${bear_ob_1h['bottom']:.4f} - ${bear_ob_1h['top']:.4f}]")
+                if btc_blocks_long:
+                    reasons.append(f"⚠️ BTC Dump Shield: Bitcoin dumping ({btc_sentiment['reason']}), Long signals paused")
+            else:
+                signal_type = "BUY / LONG"
+                tier_badge = "🔥 TIER 2: SNIPER EXTREME"
+                trade_setup = "Extreme Oversold (RSI < 20) + 1H Bullish CHoCH"
+                choch_badge = "1H CHoCH Confirmed 🟢"
+                sl = choch_data["recent_low"] * 0.975
                 risk = entry - sl
-            tp1 = entry + (risk * 1.5)
-            tp2 = entry + (risk * 2.0)
-            tp = entry + (risk * 3.0)
-            reasons.append(f"Extreme RSI Oversold ({rsi_daily:.1f})")
-            reasons.append(f"Confirmed 1H Bullish CHoCH above ${choch_data['key_lh']}")
-            if bull_ob_1h:
-                ob_info_str = f"Bullish 1H OB [${bull_ob_1h['bottom']:.4f} - ${bull_ob_1h['top']:.4f}]"
+                if risk / entry < 0.028:
+                    sl = entry * 0.972
+                    risk = entry - sl
+                tp1 = entry + (risk * 1.5)
+                tp2 = entry + (risk * 2.0)
+                tp = entry + (risk * 3.0)
+                reasons.append(f"Extreme RSI Oversold ({rsi_daily:.1f})")
+                reasons.append(f"Confirmed 1H Bullish CHoCH above ${choch_data['key_lh']}")
+                if bull_ob_1h:
+                    ob_info_str = f"Bullish 1H OB [${bull_ob_1h['bottom']:.4f} - ${bull_ob_1h['top']:.4f}]"
 
         # TIER 1: DAILY BREAD & BUTTER
         elif ema_bullish and (dist_to_support_pct <= 3.5 or is_sr_flip) and (38 <= rsi_daily <= 68):
-            signal_type = "BUY / LONG"
-            tier_badge = "⭐ TIER 1: DAILY SETUP"
-            trade_setup = "Daily Line Support Bounce + 1H Demand OB" if not is_sr_flip else "S/R Flip Breakout & Retest"
-            
-            base_support = flip_lvl if is_sr_flip else nearest_support
-            if bull_ob_1h and bull_ob_1h['bottom'] < entry:
-                base_support = min(base_support, bull_ob_1h['bottom'])
+            has_supply_conflict = bear_ob_1h and (bear_ob_1h.get('is_testing') or (bear_ob_1h['bottom'] * 0.995 <= entry <= bear_ob_1h['top'] * 1.01))
+            btc_blocks_long = btc_sentiment and not btc_sentiment.get("allow_longs", True) and symbol != "BTCUSDT"
+
+            if has_supply_conflict or btc_blocks_long:
+                signal_type = "WATCHLIST"
+                tier_badge = "WATCHLIST"
+                if has_supply_conflict:
+                    trade_setup = f"Long Blocked: Testing 1H Supply OB [${bear_ob_1h['bottom']:.4f} - ${bear_ob_1h['top']:.4f}]"
+                    reasons.append(f"⚠️ SMC Shield: Blocked Long into 1H Bearish Supply Block [${bear_ob_1h['bottom']:.4f} - ${bear_ob_1h['top']:.4f}]")
+                if btc_blocks_long:
+                    reasons.append(f"⚠️ BTC Dump Shield: Bitcoin dumping ({btc_sentiment['reason']}), Long signals paused")
+            else:
+                signal_type = "BUY / LONG"
+                tier_badge = "⭐ TIER 1: DAILY SETUP"
+                trade_setup = "Daily Line Support Bounce + 1H Demand OB" if not is_sr_flip else "S/R Flip Breakout & Retest"
                 
-            # Structural Stop Loss: strictly anchored below OB bottom or Daily Support with safe 1.5% buffer
-            sl = base_support * 0.985
-            risk = entry - sl
-            if risk / entry < 0.02:
-                sl = entry * 0.978
+                base_support = flip_lvl if is_sr_flip else nearest_support
+                if bull_ob_1h and bull_ob_1h['bottom'] < entry:
+                    base_support = min(base_support, bull_ob_1h['bottom'])
+                    
+                # Structural Stop Loss: strictly anchored below OB bottom or Daily Support with safe 2.5% buffer
+                sl = base_support * 0.975
                 risk = entry - sl
-                
-            tp1 = entry + (risk * 1.5)
-            tp2 = entry + (risk * 2.0)
-            tp = entry + (risk * 3.0)
-            reasons.append(f"Holding Daily Line Support ${base_support:.4f} (+{dist_to_support_pct:.1f}%)")
-            reasons.append("20 EMA > 50 EMA Bullish Trend Aligned")
-            reasons.append(f"RSI {rsi_daily:.1f} in healthy bullish momentum")
-            if bull_ob_1h:
-                ob_info_str = f"Bullish 1H OB [${bull_ob_1h['bottom']:.4f} - ${bull_ob_1h['top']:.4f}]"
-                reasons.append(f"1H Demand Order Block Active: {ob_info_str}")
+                if risk / entry < 0.028:
+                    sl = entry * 0.972
+                    risk = entry - sl
+                    
+                tp1 = entry + (risk * 1.5)
+                tp2 = entry + (risk * 2.0)
+                tp = entry + (risk * 3.0)
+                reasons.append(f"Holding Daily Line Support ${base_support:.4f} (+{dist_to_support_pct:.1f}%)")
+                reasons.append("20 EMA > 50 EMA Bullish Trend Aligned")
+                reasons.append(f"RSI {rsi_daily:.1f} in healthy bullish momentum")
+                if bull_ob_1h:
+                    ob_info_str = f"Bullish 1H OB [${bull_ob_1h['bottom']:.4f} - ${bull_ob_1h['top']:.4f}]"
+                    reasons.append(f"1H Demand Order Block Active: {ob_info_str}")
 
         elif (not ema_bullish) and (dist_to_resistance_pct <= 3.5) and (32 <= rsi_daily <= 62):
-            signal_type = "SELL / SHORT"
-            tier_badge = "⭐ TIER 1: DAILY SETUP"
-            trade_setup = "Daily Line Resistance Rejection + 1H Supply OB"
-            
-            base_res = nearest_resistance
-            if bear_ob_1h and bear_ob_1h['top'] > entry:
-                base_res = max(base_res, bear_ob_1h['top'])
+            has_demand_conflict = bull_ob_1h and (bull_ob_1h.get('is_testing') or (bull_ob_1h['bottom'] * 0.99 <= entry <= bull_ob_1h['top'] * 1.005))
+            btc_blocks_short = btc_sentiment and not btc_sentiment.get("allow_shorts", True) and symbol != "BTCUSDT"
+
+            if has_demand_conflict or btc_blocks_short:
+                signal_type = "WATCHLIST"
+                tier_badge = "WATCHLIST"
+                if has_demand_conflict:
+                    trade_setup = f"Short Blocked: Testing 1H Demand OB [${bull_ob_1h['bottom']:.4f} - ${bull_ob_1h['top']:.4f}]"
+                    reasons.append(f"⚠️ SMC Shield: Blocked Short into 1H Bullish Demand Block [${bull_ob_1h['bottom']:.4f} - ${bull_ob_1h['top']:.4f}]")
+                if btc_blocks_short:
+                    reasons.append(f"⚠️ BTC Pump Shield: Bitcoin pumping aggressively ({btc_sentiment['reason']}), Short signals paused")
+            else:
+                signal_type = "SELL / SHORT"
+                tier_badge = "⭐ TIER 1: DAILY SETUP"
+                trade_setup = "Daily Line Resistance Rejection + 1H Supply OB"
                 
-            # Structural Stop Loss: strictly anchored above OB top or Daily Resistance with safe 1.5% buffer
-            sl = base_res * 1.015
-            risk = sl - entry
-            if risk / entry < 0.02:
-                sl = entry * 1.022
+                base_res = nearest_resistance
+                if bear_ob_1h and bear_ob_1h['top'] > entry:
+                    base_res = max(base_res, bear_ob_1h['top'])
+                    
+                # Structural Stop Loss: strictly anchored above OB top or Daily Resistance with safe 2.5% buffer
+                sl = base_res * 1.025
                 risk = sl - entry
-                
-            tp1 = entry - (risk * 1.5)
-            tp2 = entry - (risk * 2.0)
-            tp = entry - (risk * 3.0)
-            reasons.append(f"Testing Daily Line Resistance ${base_res:.4f}")
-            reasons.append("20 EMA < 50 EMA Bearish Trend Aligned")
-            reasons.append(f"RSI {rsi_daily:.1f} in bearish momentum")
-            if bear_ob_1h:
-                ob_info_str = f"Bearish 1H OB [${bear_ob_1h['bottom']:.4f} - ${bear_ob_1h['top']:.4f}]"
-                reasons.append(f"1H Supply Order Block Active: {ob_info_str}")
+                if risk / entry < 0.028:
+                    sl = entry * 1.028
+                    risk = sl - entry
+                    
+                tp1 = entry - (risk * 1.5)
+                tp2 = entry - (risk * 2.0)
+                tp = entry - (risk * 3.0)
+                reasons.append(f"Testing Daily Line Resistance ${base_res:.4f}")
+                reasons.append("20 EMA < 50 EMA Bearish Trend Aligned")
+                reasons.append(f"RSI {rsi_daily:.1f} in bearish momentum")
+                if bear_ob_1h:
+                    ob_info_str = f"Bearish 1H OB [${bear_ob_1h['bottom']:.4f} - ${bear_ob_1h['top']:.4f}]"
+                    reasons.append(f"1H Supply Order Block Active: {ob_info_str}")
 
         else:
             signal_type = "WATCHLIST"
@@ -858,7 +923,37 @@ def record_new_signals_to_history(actionable_signals, history_data, open_symbols
 
     return history_data
 
-def get_top_pairs():
+def get_top_pairs(limit=150):
+    try:
+        url = "https://api.binance.com/api/v3/ticker/24hr"
+        resp = session.get(url, timeout=10)
+        if resp.status_code == 200:
+            data = resp.json()
+            real_b_cryptos = {'BNBUSDT', 'DGBUSDT', 'TRBUSDT', 'CKBUSDT', 'SHIBUSDT', 'MOBUSDT', 'PHBUSDT', 'VIBUSDT', 'AMBUSDT', 'ARBUSDT', 'BBUSDT', 'YBUSDT', 'STXUSDT'}
+            stables_and_junk = {'USDCUSDT', 'FDUSDUSDT', 'TUSDUSDT', 'EURUSDT', 'USDPUSDT', 'AEURUSDT', 'USD1USDT', 'RLUSDUSDT', 'XUSDUSDT', 'USDSBUSDT', 'BFDUSDT', 'EURIUSDT', 'USDEUSDT'}
+            
+            usdt_pairs = []
+            for t in data:
+                sym = t.get('symbol', '')
+                if not sym.endswith('USDT'):
+                    continue
+                if any(x in sym for x in ['UPUSDT', 'DOWNUSDT', 'BULLUSDT', 'BEARUSDT']):
+                    continue
+                if sym in stables_and_junk:
+                    continue
+                if sym.endswith('BUSDT') and sym not in real_b_cryptos:
+                    continue  # exclude tokenized equities like TSLABUSDT, GOOGLBUSDT, NVDABUSDT
+                usdt_pairs.append(t)
+
+            usdt_pairs.sort(key=lambda x: float(x.get('quoteVolume', 0)), reverse=True)
+            top_symbols = [t['symbol'] for t in usdt_pairs[:limit]]
+            if len(top_symbols) >= 30:
+                min_vol = float(usdt_pairs[len(top_symbols)-1].get('quoteVolume', 0)) / 1e6
+                print(f"[+] Dynamically selected Top {len(top_symbols)} Pure Crypto USDT Pairs by 24h Volume (Min Vol: ${min_vol:.1f}M)")
+                return top_symbols
+    except Exception as e:
+        print(f"[!] Warning: Dynamic Top 150 fetch failed ({e}). Using curated fallback list.")
+
     return [
         "BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT",
         "DOGEUSDT", "ADAUSDT", "AVAXUSDT", "LINKUSDT", "SUIUSDT",
@@ -869,14 +964,50 @@ def get_top_pairs():
         "KASUSDT", "STXUSDT", "FILUSDT", "ICPUSDT", "SANDUSDT"
     ]
 
+def get_btc_macro_sentiment():
+    kl_1h = get_klines("BTCUSDT", interval="1h", limit=50)
+    if not kl_1h or len(kl_1h) < 20:
+        return {"status": "NEUTRAL ⚪", "allow_longs": True, "allow_shorts": True, "reason": "BTC data unavailable"}
+    
+    closes = [float(k[4]) for k in kl_1h]
+    ema20 = calculate_ema(closes, 20)[-1]
+    ema50 = calculate_ema(closes, 50)[-1]
+    rsi = calculate_rsi(closes, 14)
+    current_p = closes[-1]
+    
+    change_3h = ((current_p - closes[-4]) / closes[-4]) * 100 if len(closes) >= 4 else 0.0
+    
+    is_dumping = change_3h < -1.2 or (current_p < ema20 and rsi < 42)
+    is_pumping = change_3h > 2.2 or (current_p > ema20 and rsi > 75)
+    
+    allow_longs = not is_dumping
+    allow_shorts = not is_pumping
+    
+    status_label = "DUMPING / BEARISH 🔴" if is_dumping else ("PARABOLIC PUMP 🟢" if is_pumping else ("BULLISH 🟢" if ema20 > ema50 else "BEARISH 🔴"))
+    
+    return {
+        "status": status_label,
+        "is_dumping": is_dumping,
+        "is_pumping": is_pumping,
+        "allow_longs": allow_longs,
+        "allow_shorts": allow_shorts,
+        "btc_price": current_p,
+        "change_3h": change_3h,
+        "rsi_1h": rsi,
+        "reason": f"BTC 3h: {change_3h:+.2f}% | 1H RSI: {rsi:.1f} | 20 EMA: ${ema20:,.0f}"
+    }
+
 def scan_all_pairs():
     # 1. Resolve open trades against latest candles & send TP/SL Telegram alerts
     history_data = check_and_resolve_open_trades()
     open_signals_map = {s["symbol"]: s for s in history_data.get("signals", []) if s.get("status") == "OPEN"}
     open_symbols_before_scan = set(open_signals_map.keys())
 
-    # 2. Get pairs to scan (ensure all open trades are included)
-    pairs = get_top_pairs()
+    # 2. Check BTC Macro Market Sentiment
+    btc_sentiment = get_btc_macro_sentiment()
+
+    # 3. Get Top 150 liquid pairs to scan (ensure all open trades are included)
+    pairs = get_top_pairs(limit=150)
     for s_sym in open_symbols_before_scan:
         if s_sym not in pairs:
             pairs.append(s_sym)
@@ -884,12 +1015,17 @@ def scan_all_pairs():
     print("=" * 95)
     print(" 🎯 BINANCE HYBRID SMC ENGINE (TIER 1: DAILY SETUPS + TIER 2: SNIPER EXTREMES)")
     print(f" Timestamp: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} (Local)")
-    print(f" Active Open Positions Monitored: {len(open_signals_map)}")
+    print(f" Total Symbols to Scan: {len(pairs)} | Active Open Monitored: {len(open_signals_map)}")
+    print(f" 🌐 BTC Macro Sentiment: {btc_sentiment['status']} ({btc_sentiment['reason']})")
+    if not btc_sentiment['allow_longs']:
+        print("    ⚠️  [BTC DUMP SHIELD ACTIVE] Altcoin BUY / LONG signals are strictly BLOCKED.")
+    if not btc_sentiment['allow_shorts']:
+        print("    ⚠️  [BTC PUMP SHIELD ACTIVE] Altcoin SELL / SHORT signals are strictly BLOCKED.")
     print("=" * 95)
 
     results = []
-    with ThreadPoolExecutor(max_workers=8) as executor:
-        futures = {executor.submit(analyze_symbol, p, open_signals_map.get(p)): p for p in pairs}
+    with ThreadPoolExecutor(max_workers=12) as executor:
+        futures = {executor.submit(analyze_symbol, p, open_signals_map.get(p), btc_sentiment): p for p in pairs}
         for future in futures:
             res = future.result()
             if res:
@@ -931,6 +1067,7 @@ def scan_all_pairs():
     payload = {
         "updated_at": datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
         "filter": "Hybrid SMC: Tier 1 Daily Setups + Tier 2 Sniper Extremes (1:3 R:R)",
+        "btc_sentiment": btc_sentiment,
         "active_count": len(actionable),
         "active_signals": actionable,
         "all_monitored": results,
@@ -956,6 +1093,8 @@ def generate_html_dashboard(data, output_path):
     wins = history.get("wins", 0)
     losses = history.get("losses", 0)
     net_r = history.get("net_pnl_r", 0.0)
+    btc_sentiment = data.get("btc_sentiment", {})
+    btc_status = btc_sentiment.get("status", "BULLISH 🟢")
 
     html_content = f"""<!DOCTYPE html>
 <html lang="en">
@@ -1173,6 +1312,9 @@ def generate_html_dashboard(data, output_path):
             </span>
             <div class="d-flex align-items-center gap-3">
                 <span class="badge bg-dark border border-secondary text-light">
+                    <i class="fa-brands fa-bitcoin text-warning me-1"></i> BTC Macro: <strong class="ms-1">{btc_status}</strong>
+                </span>
+                <span class="badge bg-dark border border-secondary text-light">
                     <span class="live-pulse"></span>Live Price Stream: Active
                 </span>
                 <span id="update-time" class="text-muted small">Updated: <span class="text-warning">{data.get('updated_at')}</span></span>
@@ -1238,8 +1380,11 @@ def generate_html_dashboard(data, output_path):
                 <button class="btn btn-sm btn-outline-info filter-tab-btn" id="btn-filter-running" onclick="filterSignals('RUNNING')">
                     <i class="fa-solid fa-rocket me-1"></i> 🚀 Running In Profit (<span id="cnt-running">0</span>)
                 </button>
-                <a href="#history-section" class="btn btn-sm btn-outline-danger filter-tab-btn">
-                    <i class="fa-solid fa-ban me-1"></i> 🛑 Expired / Closed Trades (<span id="cnt-expired">{losses + wins}</span>)
+                <button class="btn btn-sm btn-outline-danger filter-tab-btn" id="btn-filter-stopped" onclick="filterSignals('STOPPED')">
+                    <i class="fa-solid fa-triangle-exclamation me-1"></i> 🔴 SL Breached (<span id="cnt-stopped">0</span>)
+                </button>
+                <a href="#history-section" class="btn btn-sm btn-outline-secondary filter-tab-btn">
+                    <i class="fa-solid fa-clock-rotate-left me-1"></i> 🛑 Closed History (<span id="cnt-expired">{losses + wins}</span>)
                 </a>
             </div>
 
@@ -1394,11 +1539,21 @@ def generate_html_dashboard(data, output_path):
                         initialBorder = "#f0b90b";
                         initialBadge = '<span class="badge bg-warning text-dark py-1 px-2"><i class="fa-solid fa-clock me-1"></i>🟡 SET LIMIT ORDER</span>';
                         initialDesc = `<span class="text-warning fw-bold">Pending Limit @ $${{sig.limit_setup.limit_entry}}</span>`;
+                    }} else if (sig.action_status === 'STOPPED') {{
+                        initialCat = "STOPPED";
+                        initialBorder = "#f6465d";
+                        initialBadge = '<span class="badge bg-danger text-white py-1 px-2"><i class="fa-solid fa-triangle-exclamation me-1"></i>🔴 SL HIT / INVALID</span>';
+                        initialDesc = `<span class="text-danger fw-bold">${{sig.action_label || 'Stop Loss Breached (Do Not Enter)'}}</span>`;
                     }} else if (sig.action_status === 'RUNNING') {{
                         initialCat = "RUNNING";
                         initialBorder = "#0dcaf0";
                         initialBadge = '<span class="badge bg-info text-dark py-1 px-2"><i class="fa-solid fa-rocket me-1"></i>🚀 RUNNING IN PROFIT</span>';
                         initialDesc = `<span class="text-info fw-bold">${{sig.action_label || 'Running in Profit'}}</span>`;
+                    }} else if (sig.action_status === 'WARNING') {{
+                        initialCat = "WARNING";
+                        initialBorder = "#f0b90b";
+                        initialBadge = '<span class="badge bg-warning text-dark py-1 px-2"><i class="fa-solid fa-triangle-exclamation me-1"></i>🟡 NEAR SL / CAUTION</span>';
+                        initialDesc = `<span class="text-warning fw-bold">${{sig.action_label || 'Price Near SL'}}</span>`;
                     }}
                     col.setAttribute('data-category', initialCat);
 
@@ -1437,7 +1592,7 @@ def generate_html_dashboard(data, output_path):
                                     <div class="h4 mb-0 fw-bold text-white live-price-val" id="live-${{sig.symbol}}">$${{sig.current_price}}</div>
                                 </div>
                                 <div class="text-end border-start border-secondary ps-3">
-                                    <div class="metric-title">${{sig.limit_setup ? 'Market (Now)' : 'Market Entry'}}</div>
+                                    <div class="metric-title">${{sig.limit_setup ? 'Market (Now)' : (sig.action_status === 'RUNNING' || sig.action_status === 'STOPPED' || sig.action_status === 'WARNING' ? 'Signal Entry' : 'Market Entry')}}</div>
                                     <div class="h5 mb-0 fw-bold val-yellow">$${{sig.entry}}</div>
                                     <small class="fw-bold live-diff-val" id="diff-${{sig.symbol}}">0.00%</small>
                                 </div>
@@ -1634,6 +1789,7 @@ def generate_html_dashboard(data, output_path):
                 let countReady = 0;
                 let countLimit = 0;
                 let countRunning = 0;
+                let countStopped = 0;
 
                 const active = EMBEDDED_DATA.active_signals || [];
                 active.forEach(sig => {{
@@ -1650,36 +1806,38 @@ def generate_html_dashboard(data, output_path):
                         if (liveEl) liveEl.innerText = `$${{pStr}}`;
                         if (watchEl) watchEl.innerText = `$${{pStr}}`;
 
-                        // Calculate distance from entry
+                        // Calculate distance from entry and PnL direction
                         const entry = sig.raw_entry;
-                        const diffPct = ((liveP - entry) / entry) * 100;
+                        const sl = sig.raw_sl;
+                        const tp = sig.raw_tp;
                         const isLong = sig.signal.includes("BUY") || sig.signal.includes("LONG");
+                        const rawDiffPct = ((liveP - entry) / entry) * 100;
+                        const pnlPct = isLong ? rawDiffPct : -rawDiffPct;
+
+                        const isSlHit = (sl > 0) && (isLong ? (liveP <= sl) : (liveP >= sl));
+                        const isTpHit = (tp > 0) && (isLong ? (liveP >= tp) : (liveP <= tp));
                         
                         let diffText = "";
                         let diffColor = "text-muted";
 
-                        if (isLong) {{
-                            if (Math.abs(diffPct) <= 0.7) {{
-                                diffText = `🎯 In Entry Zone (${{diffPct >= 0 ? '+' : ''}}${{diffPct.toFixed(2)}}%)`;
-                                diffColor = "val-green";
-                            }} else if (diffPct > 0.7) {{
-                                diffText = `🚀 Floating Profit (+${{diffPct.toFixed(2)}}%)`;
-                                diffColor = "val-green";
-                            }} else {{
-                                diffText = `📉 Discount Dip (${{diffPct.toFixed(2)}}%)`;
-                                diffColor = "val-yellow";
-                            }}
+                        if (isSlHit) {{
+                            diffText = `🔴 SL Breached (${{rawDiffPct >= 0 ? '+' : ''}}${{rawDiffPct.toFixed(2)}}%)`;
+                            diffColor = "val-red";
+                        }} else if (isTpHit) {{
+                            diffText = `🎯 Target Hit (+${{pnlPct.toFixed(2)}}%)`;
+                            diffColor = "val-green";
+                        }} else if (pnlPct > 0.75) {{
+                            diffText = `🚀 Floating Profit (+${{pnlPct.toFixed(2)}}%)`;
+                            diffColor = "val-green";
+                        }} else if (Math.abs(rawDiffPct) <= 0.75) {{
+                            diffText = `🎯 In Entry Zone (${{rawDiffPct >= 0 ? '+' : ''}}${{rawDiffPct.toFixed(2)}}%)`;
+                            diffColor = isLong ? "val-green" : "val-red";
+                        }} else if (pnlPct < -0.75) {{
+                            diffText = isLong ? `📉 Drawdown (${{rawDiffPct.toFixed(2)}}%)` : `📈 Adverse Pump (+${{rawDiffPct.toFixed(2)}}%)`;
+                            diffColor = "val-yellow";
                         }} else {{
-                            if (Math.abs(diffPct) <= 0.7) {{
-                                diffText = `🎯 In Entry Zone (${{-diffPct >= 0 ? '+' : ''}}${{(-diffPct).toFixed(2)}}%)`;
-                                diffColor = "val-red";
-                            }} else if (diffPct < -0.7) {{
-                                diffText = `🚀 Floating Profit (+${{(-diffPct).toFixed(2)}}%)`;
-                                diffColor = "val-green";
-                            }} else {{
-                                diffText = `📈 Slight Pullback (+${{diffPct.toFixed(2)}}%)`;
-                                diffColor = "val-yellow";
-                            }}
+                            diffText = `${{rawDiffPct >= 0 ? '+' : ''}}${{rawDiffPct.toFixed(2)}}%`;
+                            diffColor = "val-yellow";
                         }}
 
                         if (diffEl) {{
@@ -1693,24 +1851,41 @@ def generate_html_dashboard(data, output_path):
                         let badgeHtml = "";
                         let descHtml = "";
 
-                        if (sig.limit_setup) {{
+                        if (isSlHit) {{
+                            cat = "STOPPED";
+                            countStopped++;
+                            barBorder = "#f6465d";
+                            badgeHtml = '<span class="badge bg-danger text-white py-1 px-2"><i class="fa-solid fa-triangle-exclamation me-1"></i>🔴 SL HIT / INVALID</span>';
+                            descHtml = '<span class="text-danger fw-bold">Stop Loss Breached (Do Not Enter)</span>';
+                        }} else if (sig.limit_setup) {{
                             cat = "LIMIT";
                             countLimit++;
                             barBorder = "#f0b90b";
                             badgeHtml = '<span class="badge bg-warning text-dark py-1 px-2"><i class="fa-solid fa-clock me-1"></i>🟡 SET LIMIT ORDER</span>';
                             descHtml = `<span class="text-warning fw-bold">Pending Limit @ $${{sig.limit_setup.limit_entry}}</span>`;
-                        }} else if (isLong ? diffPct > 0.75 : diffPct < -0.75) {{
+                        }} else if (isTpHit) {{
+                            cat = "RUNNING";
+                            countRunning++;
+                            barBorder = "#0ecb81";
+                            badgeHtml = '<span class="badge bg-success text-white py-1 px-2"><i class="fa-solid fa-trophy me-1"></i>🎯 TARGET HIT</span>';
+                            descHtml = `<span class="text-success fw-bold">+${{pnlPct.toFixed(2)}}% Target Hit</span>`;
+                        }} else if (pnlPct > 0.75) {{
                             cat = "RUNNING";
                             countRunning++;
                             barBorder = "#0dcaf0";
                             badgeHtml = '<span class="badge bg-info text-dark py-1 px-2"><i class="fa-solid fa-rocket me-1"></i>🚀 RUNNING IN PROFIT</span>';
-                            descHtml = `<span class="text-info fw-bold">+${{Math.abs(diffPct).toFixed(2)}}% Away (Do Not Chase)</span>`;
-                        }} else {{
+                            descHtml = `<span class="text-info fw-bold">+${{pnlPct.toFixed(2)}}% Away (Do Not Chase)</span>`;
+                        }} else if (Math.abs(rawDiffPct) <= 0.75) {{
                             cat = "READY";
                             countReady++;
                             barBorder = "#0ecb81";
                             badgeHtml = '<span class="badge bg-success text-white py-1 px-2"><i class="fa-solid fa-circle-check me-1"></i>🟢 GANNA PULUWAN</span>';
-                            descHtml = `<span class="text-success fw-bold">In Entry Zone (${{diffPct >= 0 ? '+' : ''}}${{diffPct.toFixed(2)}}%)</span>`;
+                            descHtml = `<span class="text-success fw-bold">In Entry Zone (${{rawDiffPct >= 0 ? '+' : ''}}${{rawDiffPct.toFixed(2)}}%)</span>`;
+                        }} else {{
+                            cat = "WARNING";
+                            barBorder = "#f0b90b";
+                            badgeHtml = '<span class="badge bg-warning text-dark py-1 px-2"><i class="fa-solid fa-triangle-exclamation me-1"></i>🟡 NEAR SL / CAUTION</span>';
+                            descHtml = `<span class="text-warning fw-bold">Out of Entry Zone (${{rawDiffPct >= 0 ? '+' : ''}}${{rawDiffPct.toFixed(2)}}%)</span>`;
                         }}
 
                         const barEl = document.getElementById(`action-bar-${{sig.symbol}}`);
@@ -1736,10 +1911,12 @@ def generate_html_dashboard(data, output_path):
                 const elReady = document.getElementById('cnt-ready');
                 const elLimit = document.getElementById('cnt-limit');
                 const elRunning = document.getElementById('cnt-running');
+                const elStopped = document.getElementById('cnt-stopped');
                 if (elAll) elAll.innerText = active.length;
                 if (elReady) elReady.innerText = countReady;
                 if (elLimit) elLimit.innerText = countLimit;
                 if (elRunning) elRunning.innerText = countRunning;
+                if (elStopped) elStopped.innerText = countStopped;
 
             }} catch (e) {{
                 console.log("Binance direct ticker fetch skipped:", e);
