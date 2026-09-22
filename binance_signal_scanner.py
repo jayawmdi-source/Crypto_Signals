@@ -1383,9 +1383,9 @@ def generate_html_dashboard(data, output_path):
                 <button class="btn btn-sm btn-outline-danger filter-tab-btn" id="btn-filter-stopped" onclick="filterSignals('STOPPED')">
                     <i class="fa-solid fa-triangle-exclamation me-1"></i> 🔴 SL Breached (<span id="cnt-stopped">0</span>)
                 </button>
-                <a href="#history-section" class="btn btn-sm btn-outline-secondary filter-tab-btn">
+                <button type="button" onclick="scrollToHistory()" class="btn btn-sm btn-outline-secondary filter-tab-btn">
                     <i class="fa-solid fa-clock-rotate-left me-1"></i> 🛑 Closed History (<span id="cnt-expired">{losses + wins}</span>)
-                </a>
+                </button>
             </div>
 
             <div id="signals-container" class="row g-3">
@@ -1771,6 +1771,13 @@ def generate_html_dashboard(data, output_path):
             }});
         }}
 
+        function scrollToHistory() {{
+            const el = document.getElementById('history-section');
+            if (el) {{
+                el.scrollIntoView({{ behavior: 'smooth' }});
+            }}
+        }}
+
         // Real-Time Live Price Polling from Binance API every 4 seconds!
         async function fetchLivePrices() {{
             try {{
@@ -1924,6 +1931,10 @@ def generate_html_dashboard(data, output_path):
         }}
 
         document.addEventListener('DOMContentLoaded', () => {{
+            if (window.location.hash) {{
+                history.replaceState(null, null, window.location.pathname + window.location.search);
+            }}
+            window.scrollTo(0, 0);
             renderUI(EMBEDDED_DATA);
             fetchLivePrices();
             setInterval(fetchLivePrices, 4000); // Live tick every 4 seconds!
