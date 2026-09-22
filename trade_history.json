@@ -1,5 +1,5 @@
 {
-  "updated_at": "2026-09-22 20:03:05",
+  "updated_at": "2026-09-22 22:55:46",
   "total_signals": 50,
   "total_closed": 10,
   "wins": 5,
@@ -1020,7 +1020,9 @@
       "tp_str": "8.8587",
       "limit_setup": null,
       "status": "OPEN",
-      "outcome_pnl": 0.0
+      "outcome_pnl": 0.0,
+      "tp1_hit": true,
+      "notified_tp1": true
     },
     {
       "id": 49,
