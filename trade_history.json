@@ -1,12 +1,12 @@
 {
-  "updated_at": "2026-09-23 09:57:17",
+  "updated_at": "2026-09-23 05:56:26",
   "total_signals": 48,
-  "total_closed": 19,
-  "wins": 14,
+  "total_closed": 27,
+  "wins": 22,
   "losses": 5,
-  "pending": 29,
-  "win_rate_pct": 73.7,
-  "net_pnl_r": 21.2,
+  "pending": 21,
+  "win_rate_pct": 81.5,
+  "net_pnl_r": 28.0,
   "signals": [
     {
       "id": 1,
@@ -52,8 +52,8 @@
       "sl_str": "107.3749",
       "tp": 124.67544999999998,
       "tp_str": "124.6754",
-      "status": "TP1_BE_RUNNING",
-      "outcome_pnl": 0.0,
+      "status": "WIN (TP1 Hit / Break-Even Exit)",
+      "outcome_pnl": 0.75,
       "tp1": 118.187725,
       "tp1_str": "118.1877",
       "tp2": 120.35029999999999,
@@ -64,7 +64,9 @@
       "trailing_sl_str": "112.0036",
       "session": "Global",
       "fvg": "None",
-      "sweep": "None"
+      "sweep": "None",
+      "resolved_at": "2026-09-23 05:56",
+      "notified_loss": true
     },
     {
       "id": 3,
@@ -141,8 +143,8 @@
       "sl_str": "0.217094",
       "tp": 0.278718,
       "tp_str": "0.278718",
-      "status": "TP1_BE_RUNNING",
-      "outcome_pnl": 0.0,
+      "status": "WIN (TP1 Hit / Break-Even Exit)",
+      "outcome_pnl": 0.75,
       "tp1": 0.25560900000000003,
       "tp1_str": "0.255609",
       "tp2": 0.263312,
@@ -164,7 +166,9 @@
       "fvg": "None",
       "sweep": "None",
       "tp1_hit": true,
-      "notified_tp1": true
+      "notified_tp1": true,
+      "resolved_at": "2026-09-23 05:56",
+      "notified_loss": true
     },
     {
       "id": 6,
@@ -179,8 +183,8 @@
       "sl_str": "0.166367",
       "tp": 0.2389005,
       "tp_str": "0.238900",
-      "status": "TP1_BE_RUNNING",
-      "outcome_pnl": 0.0,
+      "status": "WIN (TP1 Hit / Break-Even Exit)",
+      "outcome_pnl": 0.75,
       "tp1": 0.21170024999999998,
       "tp1_str": "0.211700",
       "tp2": 0.220767,
@@ -202,7 +206,9 @@
       "trailing_sl_str": "0.182364",
       "session": "Global",
       "fvg": "None",
-      "sweep": "None"
+      "sweep": "None",
+      "resolved_at": "2026-09-23 05:56",
+      "notified_loss": true
     },
     {
       "id": 7,
@@ -417,8 +423,8 @@
       "sl_str": "0.896350",
       "tp": 1.1473499999999999,
       "tp_str": "1.1473",
-      "status": "TP1_BE_RUNNING",
-      "outcome_pnl": 0.0,
+      "status": "WIN (TP1 Hit / Break-Even Exit)",
+      "outcome_pnl": 0.75,
       "tp1": 1.0532249999999999,
       "tp1_str": "1.0532",
       "tp2": 1.0846,
@@ -440,7 +446,9 @@
       "fvg": "None",
       "sweep": "None",
       "tp1_hit": true,
-      "notified_tp1": true
+      "notified_tp1": true,
+      "resolved_at": "2026-09-23 05:56",
+      "notified_loss": true
     },
     {
       "id": 15,
@@ -1115,15 +1123,17 @@
         "reward_pct": "10.80%",
         "dist_pct": "4.3%"
       },
-      "status": "TP1_BE_RUNNING",
-      "outcome_pnl": 0.0,
+      "status": "WIN (TP1 Hit / Break-Even Exit)",
+      "outcome_pnl": 0.75,
       "trailing_sl": 0.014869680000000001,
       "trailing_sl_str": "0.014870",
       "session": "Global",
       "fvg": "None",
       "sweep": "None",
       "tp1_hit": true,
-      "notified_tp1": true
+      "notified_tp1": true,
+      "resolved_at": "2026-09-23 05:56",
+      "notified_loss": true
     },
     {
       "id": 43,
@@ -1252,15 +1262,17 @@
       "tp": 8.8587,
       "tp_str": "8.8587",
       "limit_setup": null,
-      "status": "TP1_BE_RUNNING",
-      "outcome_pnl": 0.0,
+      "status": "WIN (TP1 Hit / Break-Even Exit)",
+      "outcome_pnl": 0.75,
       "trailing_sl": 7.6382460000000005,
       "trailing_sl_str": "7.6382",
       "session": "Global",
       "fvg": "None",
       "sweep": "None",
       "tp1_hit": true,
-      "notified_tp1": true
+      "notified_tp1": true,
+      "resolved_at": "2026-09-23 05:56",
+      "notified_loss": true
     },
     {
       "id": 49,
@@ -1281,15 +1293,17 @@
       "tp": 45.42550000000002,
       "tp_str": "45.4255",
       "limit_setup": null,
-      "status": "TP1_BE_RUNNING",
-      "outcome_pnl": 0.0,
+      "status": "WIN (TP1 Hit / Break-Even Exit)",
+      "outcome_pnl": 0.75,
       "trailing_sl": 39.178200000000004,
       "trailing_sl_str": "39.1782",
       "session": "Global",
       "fvg": "None",
       "sweep": "None",
       "tp1_hit": true,
-      "notified_tp1": true
+      "notified_tp1": true,
+      "resolved_at": "2026-09-23 05:56",
+      "notified_loss": true
     },
     {
       "id": 50,
@@ -1401,8 +1415,8 @@
       "tp": 0.00999625,
       "tp_str": "0.009996",
       "limit_setup": null,
-      "status": "TP2_LOCKED_RUNNING",
-      "outcome_pnl": 0.0,
+      "status": "WIN (TP2 Trailed / Locked +1.5R)",
+      "outcome_pnl": 1.5,
       "trailing_sl": 0.009593125000000001,
       "trailing_sl_str": "0.009593",
       "session": "Global",
@@ -1411,7 +1425,9 @@
       "tp1_hit": true,
       "notified_tp1": true,
       "tp2_hit": true,
-      "notified_tp2": true
+      "notified_tp2": true,
+      "resolved_at": "2026-09-23 05:56",
+      "notified_loss": true
     },
     {
       "id": 54,
@@ -1513,7 +1529,7 @@
   ],
   "circuit_breaker": {
     "is_tripped": false,
-    "losses_today": 0,
+    "losses_today": 1,
     "max_allowed": 2
   }
 }
