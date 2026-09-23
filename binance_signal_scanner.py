@@ -8,6 +8,12 @@ from concurrent.futures import ThreadPoolExecutor
 
 sys.stdout.reconfigure(encoding='utf-8')
 
+# Global Constants & Risk Limits
+MAX_ACTIVE_POSITIONS = 4      # Portfolio Heat Governor: Max 4 concurrent active trades
+MAX_DAILY_LOSSES = 2          # Daily Drawdown Shield: Max 2 closed losses per UTC day
+LIMIT_EXPIRY_HOURS = 24       # Pending limit orders expire if unfilled after 24h
+FEE_BUFFER_PCT = 0.002        # 0.2% round-trip exchange fee buffer for True Break-Even
+
 BINANCE_BASES = [
     "https://data-api.binance.vision/api/v3",
     "https://api.binance.com/api/v3",
@@ -62,6 +68,51 @@ def send_telegram_message(message_html):
         print(f"[!] Telegram request error: {e}")
         return False
 
+def get_market_session():
+    utc_now = datetime.now(timezone.utc)
+    hour = utc_now.hour + (utc_now.minute / 60.0)
+    
+    if 12.5 <= hour <= 16.0:
+        return {
+            "name": "London/NY Overlap",
+            "badge": "🔥 PEAK VOLATILITY (London+NY)",
+            "tier": "A+",
+            "is_prime": True,
+            "desc": "Peak Institutional Inflow & Trend Expansion"
+        }
+    elif 7.0 <= hour <= 12.5:
+        return {
+            "name": "London Session",
+            "badge": "🇬🇧 LONDON SESSION",
+            "tier": "A",
+            "is_prime": True,
+            "desc": "London Open Liquidity Sweeps"
+        }
+    elif 16.0 < hour <= 20.0:
+        return {
+            "name": "New York Afternoon",
+            "badge": "🇺🇸 NY AFTERNOON",
+            "tier": "B+",
+            "is_prime": True,
+            "desc": "NY Trend Continuation & Reversals"
+        }
+    elif 0.0 <= hour < 7.0:
+        return {
+            "name": "Asian Session",
+            "badge": "🌏 ASIAN SESSION",
+            "tier": "B",
+            "is_prime": False,
+            "desc": "Range Building (Liquidity Pool Setup)"
+        }
+    else:
+        return {
+            "name": "Off-Hours Dead Zone",
+            "badge": "💤 OFF-HOURS",
+            "tier": "C",
+            "is_prime": False,
+            "desc": "Low Volatility / Chop"
+        }
+
 def send_telegram_new_signal(sig):
     is_long = "BUY" in sig.get("signal", "") or "LONG" in sig.get("signal", "")
     icon = "🟢" if is_long else "🔴"
@@ -69,10 +120,14 @@ def send_telegram_new_signal(sig):
     
     ls = sig.get("limit_setup")
     action_status = sig.get("action_status", "READY")
+    session_badge = sig.get("session_badge", "🌐 GLOBAL MARKET")
+    fvg_tag = sig.get("fvg_str", "None")
+    sweep_tag = sig.get("sweep_str", "None")
+    mtf_tag = sig.get("mtf_status", "Aligned")
     
     if ls:
         status_tag = "🟡 <b>PENDING LIMIT ORDER (Wait for Retest)</b>"
-        header = f"🟡 <b>NEW SMC LIMIT SIGNAL</b> {icon}\n👉 <b>Pending Limit Order (Retest Pullback)</b>"
+        header = f"🟡 <b>NEW SMC LIMIT SIGNAL</b> {icon}\n👉 <b>Pending Limit Retest Pullback</b>"
         advice = f"💡 <b>උපදෙස:</b> Binance එකේ <b>{'Buy Limit' if is_long else 'Sell Limit'} Order</b> එකක් දාන්න <code>${ls.get('limit_entry')}</code> ට!"
         
         body = (
@@ -80,15 +135,16 @@ def send_telegram_new_signal(sig):
             f"🪙 <b>PAIR:</b> #{sig.get('symbol')}\n"
             f"⚡ <b>ACTION:</b> <b>{action}</b>\n"
             f"📊 <b>STATUS:</b> {status_tag}\n"
+            f"🕒 <b>SESSION:</b> {session_badge}\n"
             f"⭐ <b>TIER:</b> {sig.get('tier_badge', 'TIER 1')}\n"
             f"📐 <b>SETUP:</b> {sig.get('setup', '-')}\n"
             f"━━━━━━━━━━━━━━━━━━━━\n"
             f"🟡 <b>RECOMMENDED SMC LIMIT ORDER:</b>\n"
             f"👉 <b>Limit Entry:</b> <code>${ls.get('limit_entry')}</code> (Pullback {ls.get('dist_pct', '-')})\n"
-            f"🛑 <b>Limit Safe SL:</b> <code>${ls.get('limit_sl')}</code> (-{ls.get('risk_pct', '-')})\n"
-            f"🏆 <b>Limit TP1:</b> <code>${ls.get('limit_tp1', '-')}</code> (50% + SL to BE)\n"
-            f"🏆 <b>Limit TP2:</b> <code>${ls.get('limit_tp2', '-')}</code>\n"
-            f"🏆 <b>Limit TP3:</b> <code>${ls.get('limit_tp')}</code> (+{ls.get('reward_pct', '-')}) [1:3 R:R]\n"
+            f"🛑 <b>Dynamic Safe SL (ATR):</b> <code>${ls.get('limit_sl')}</code> (-{ls.get('risk_pct', '-')})\n"
+            f"🏆 <b>TP1 (1:1.5):</b> <code>${ls.get('limit_tp1', '-')}</code> (50% Book + True BE)\n"
+            f"🏆 <b>TP2 (1:2.0):</b> <code>${ls.get('limit_tp2', '-')}</code> (25% Book + Lock +1.5R)\n"
+            f"🏆 <b>TP3 (1:3.0):</b> <code>${ls.get('limit_tp')}</code> (+{ls.get('reward_pct', '-')}) [Full Win]\n"
             f"━━━━━━━━━━━━━━━━━━━━\n"
             f"🎯 <b>Instant Market Plan (Alternative):</b>\n"
             f"• Market Now: <code>${sig.get('entry')}</code> | SL: <code>${sig.get('stop_loss')}</code> | TP3: <code>${sig.get('take_profit_1_3')}</code>\n"
@@ -103,12 +159,13 @@ def send_telegram_new_signal(sig):
             f"🪙 <b>PAIR:</b> #{sig.get('symbol')}\n"
             f"⚡ <b>ACTION:</b> <b>{action}</b>\n"
             f"📊 <b>STATUS:</b> {status_tag}\n"
+            f"🕒 <b>SESSION:</b> {session_badge}\n"
             f"⭐ <b>TIER:</b> {sig.get('tier_badge', 'TIER 1')}\n"
             f"📐 <b>SETUP:</b> {sig.get('setup', '-')}\n"
             f"━━━━━━━━━━━━━━━━━━━━\n"
             f"🎯 <b>ENTRY:</b> <code>${sig.get('entry')}</code>\n"
             f"📈 <b>LIVE PRICE:</b> <code>${sig.get('current_price')}</code> ({sig.get('action_label', '')})\n"
-            f"🛑 <b>SAFE SL:</b> <code>${sig.get('stop_loss')}</code> (-{sig.get('risk_pct', '-')})\n"
+            f"🛑 <b>CURRENT SL:</b> <code>${sig.get('trailing_sl_str', sig.get('stop_loss'))}</code>\n"
             f"🏆 <b>TP 1:</b> <code>${sig.get('tp_1', '-')}</code> | <b>TP 3:</b> <code>${sig.get('take_profit_1_3')}</code>\n"
         )
     else:
@@ -121,14 +178,15 @@ def send_telegram_new_signal(sig):
             f"🪙 <b>PAIR:</b> #{sig.get('symbol')}\n"
             f"⚡ <b>ACTION:</b> <b>{action}</b>\n"
             f"📊 <b>STATUS:</b> {status_tag}\n"
+            f"🕒 <b>SESSION:</b> {session_badge}\n"
             f"⭐ <b>TIER:</b> {sig.get('tier_badge', 'TIER 1')}\n"
             f"📐 <b>SETUP:</b> {sig.get('setup', '-')}\n"
             f"━━━━━━━━━━━━━━━━━━━━\n"
-            f"🎯 <b>MARKET ENTRY:</b> <code>${sig.get('entry')}</code> (Now in Zone)\n"
-            f"🛑 <b>SAFE SL:</b> <code>${sig.get('stop_loss')}</code> (-{sig.get('risk_pct', '-')})\n"
-            f"🏆 <b>TP 1 (1:1.5):</b> <code>${sig.get('tp_1', '-')}</code> (50% Book + SL to BE)\n"
-            f"🏆 <b>TP 2 (1:2.0):</b> <code>${sig.get('tp_2', '-')}</code>\n"
-            f"🏆 <b>TP 3 (1:3.0):</b> <code>${sig.get('take_profit_1_3')}</code> (+{sig.get('reward_pct', '-')}) [1:3 R:R]\n"
+            f"🎯 <b>MARKET ENTRY:</b> <code>${sig.get('entry')}</code> (In Entry Zone)\n"
+            f"🛑 <b>Dynamic Safe SL (ATR):</b> <code>${sig.get('stop_loss')}</code> (-{sig.get('risk_pct', '-')})\n"
+            f"🏆 <b>TP 1 (1:1.5):</b> <code>${sig.get('tp_1', '-')}</code> (Book 50% + SL to True BE)\n"
+            f"🏆 <b>TP 2 (1:2.0):</b> <code>${sig.get('tp_2', '-')}</code> (Book 25% + Lock +1.5R)\n"
+            f"🏆 <b>TP 3 (1:3.0):</b> <code>${sig.get('take_profit_1_3')}</code> (+{sig.get('reward_pct', '-')}) [Full Target]\n"
         )
 
     reasons_bullets = "\n".join([f"• {r}" for r in sig.get("reasons", [])[:3]])
@@ -138,6 +196,9 @@ def send_telegram_new_signal(sig):
         f"{body}"
         f"━━━━━━━━━━━━━━━━━━━━\n"
         f"{advice}\n\n"
+        f"💧 <b>Fair Value Gap (FVG):</b> {fvg_tag}\n"
+        f"⚡ <b>Liquidity Sweep:</b> {sweep_tag}\n"
+        f"⏳ <b>4H Multi-Timeframe:</b> {mtf_tag}\n"
         f"📦 <b>1H Order Block:</b> {sig.get('order_block_1h', 'None')}\n"
         f"📊 <b>RSI:</b> Daily {sig.get('rsi_daily', '-')} | 1H {sig.get('rsi_1h', '-')}\n\n"
         f"💡 <b>Key Confirmations:</b>\n{reasons_bullets}\n\n"
@@ -152,25 +213,65 @@ def send_telegram_resolution(sig, event_type):
         msg = (
             f"🎉 <b>1:3 FULL TARGET HIT! (WIN +3.0R)</b> 🏆\n"
             f"━━━━━━━━━━━━━━━━━━━━\n"
-            f"🪙 #{sym} has reached its <b>1:3 Take Profit</b> Target (<code>${sig.get('tp_str', sig.get('tp'))}</code>)!\n"
+            f"🪙 #{sym} reached its <b>1:3 Full Take Profit</b> Target (<code>${sig.get('tp_str', sig.get('tp'))}</code>)!\n"
             f"💰 <b>Net Gain: +3.0 R Profit!</b>\n"
-            f"✅ Trade completed successfully."
+            f"✅ Trade completed with maximum institutional target."
+        )
+    elif event_type == "WIN_TP2":
+        msg = (
+            f"🚀 <b>TP2 HIT! (1:2.0) - PROFIT LOCKED (+1.5R)!</b> 🔒\n"
+            f"━━━━━━━━━━━━━━━━━━━━\n"
+            f"🪙 #{sym} hit TP2 at <code>${sig.get('tp2_str', sig.get('tp2'))}</code>!\n"
+            f"💰 <b>Action:</b> Book an additional 25% Profit!\n"
+            f"🛡️ <b>Action (Trailing SL):</b> Trail Stop Loss UP to <b>TP1 (<code>${sig.get('tp1_str', sig.get('tp1'))}</code>)</b>!\n"
+            f"✨ This trade is now GUARANTEED to exit with at least <b>+1.5R Profit</b> even if market reverses!"
         )
     elif event_type == "WIN_TP1":
         msg = (
-            f"🛡️ <b>TP1 (1:1.5) HIT & PROFIT SECURED!</b>\n"
+            f"🛡️ <b>TP1 HIT (1:1.5) & PROFIT SECURED!</b>\n"
             f"━━━━━━━━━━━━━━━━━━━━\n"
             f"🪙 #{sym} hit TP1 at <code>${sig.get('tp1_str', sig.get('tp1'))}</code>!\n"
-            f"✅ <b>Action:</b> Book 50% Profit now!\n"
-            f"🔒 <b>Action:</b> Move Stop Loss to Break-Even (<code>${sig.get('entry_str', sig.get('entry'))}</code>) for a 100% Risk-Free Runner!"
+            f"💰 <b>Action:</b> Book 50% Profit now!\n"
+            f"🔒 <b>Action:</b> Move Stop Loss to <b>True Break-Even (<code>${sig.get('trailing_sl_str', sig.get('entry_str'))}</code>)</b> [0.2% Fee Buffer included] for a 100% Zero-Risk Runner!"
+        )
+    elif event_type == "WIN_LOCKED":
+        msg = (
+            f"🏆 <b>TRAILED PROFIT STOPPED OUT (WIN +1.5R)</b>\n"
+            f"━━━━━━━━━━━━━━━━━━━━\n"
+            f"🪙 #{sym} touched Trailing Stop at <code>${sig.get('trailing_sl_str', sig.get('tp1_str'))}</code> after securing TP2.\n"
+            f"💰 <b>Net Gain: +1.5 R Profit Secured!</b>\n"
+            f"Trade resolved successfully with locked gains."
+        )
+    elif event_type == "WIN_BE":
+        msg = (
+            f"🛡️ <b>BREAK-EVEN EXIT (WIN +0.75R)</b>\n"
+            f"━━━━━━━━━━━━━━━━━━━━\n"
+            f"🪙 #{sym} returned to True Break-Even after securing TP1.\n"
+            f"💰 <b>Net Gain: +0.75 R Secured!</b> (Zero loss, initial 50% profit banked).\n"
+            f"Capital 100% protected."
         )
     elif event_type == "LOSS_SL":
         msg = (
-            f"🛑 <b>STOP LOSS HIT (EXPIRED)</b>\n"
+            f"🛑 <b>STOP LOSS HIT</b>\n"
             f"━━━━━━━━━━━━━━━━━━━━\n"
             f"🪙 #{sym} touched Safe SL at <code>${sig.get('sl_str', sig.get('sl'))}</code>.\n"
             f"📉 Net Loss: -1.0 R\n"
-            f"Trade closed according to risk management rules."
+            f"Trade closed strictly adhering to risk management rules."
+        )
+    elif event_type == "LIMIT_FILLED":
+        msg = (
+            f"⚡ <b>PENDING LIMIT ORDER FILLED!</b> 🟢\n"
+            f"━━━━━━━━━━━━━━━━━━━━\n"
+            f"🪙 #{sym} retraced cleanly to the SMC Entry Zone at <code>${sig.get('entry_str', sig.get('entry'))}</code>!\n"
+            f"📈 Trade is now officially <b>ACTIVE (OPEN)</b>.\n"
+            f"🛑 SL: <code>${sig.get('sl_str', sig.get('sl'))}</code> | 🏆 TP1: <code>${sig.get('tp1_str', sig.get('tp1'))}</code> | 🏆 TP3: <code>${sig.get('tp_str', sig.get('tp'))}</code>"
+        )
+    elif event_type == "CIRCUIT_BREAKER":
+        msg = (
+            f"🛑 <b>DAILY DRAWDOWN SHIELD ACTIVATED (2 LOSSES)</b> 🛡️\n"
+            f"━━━━━━━━━━━━━━━━━━━━\n"
+            f"⚠️ Two trades have hit Stop Loss today. To protect trading capital against adverse macro volatility, the bot has paused all new signal generation for 24 hours.\n"
+            f"🔒 Capital Preservation Mode: Active."
         )
     else:
         return
@@ -224,6 +325,23 @@ def calculate_rsi(prices, period=14):
     rs = avg_gain / avg_loss
     return 100.0 - (100.0 / (1.0 + rs))
 
+def calculate_atr(klines, period=14):
+    if not klines or len(klines) < period + 1:
+        return 0.0
+    trs = []
+    for i in range(1, len(klines)):
+        h = float(klines[i][2])
+        l = float(klines[i][3])
+        prev_c = float(klines[i-1][4])
+        tr = max(h - l, abs(h - prev_c), abs(l - prev_c))
+        trs.append(tr)
+    if len(trs) < period:
+        return sum(trs) / len(trs) if trs else 0.0
+    atr = sum(trs[:period]) / period
+    for tr in trs[period:]:
+        atr = (atr * (period - 1) + tr) / period
+    return atr
+
 def fmt_price(val):
     if val is None or val == 0:
         return "-"
@@ -262,7 +380,90 @@ def find_line_chart_sr(close_prices, window=3):
 
     return cluster_levels(supports), cluster_levels(resistances)
 
-def detect_1h_order_blocks(klines_1h):
+def detect_1h_fvg(klines_1h):
+    if not klines_1h or len(klines_1h) < 15:
+        return None, None
+    bullish_fvgs = []
+    bearish_fvgs = []
+    n = len(klines_1h)
+    current_price = float(klines_1h[-1][4])
+    
+    for i in range(2, n - 1):
+        prev_h = float(klines_1h[i-2][2])
+        prev_l = float(klines_1h[i-2][3])
+        curr_h = float(klines_1h[i][2])
+        curr_l = float(klines_1h[i][3])
+        
+        # Bullish FVG: Low of candle i > High of candle i-2
+        if curr_l > prev_h:
+            gap_size = curr_l - prev_h
+            gap_pct = (gap_size / prev_h) * 100
+            if gap_pct >= 0.2:
+                fvg_top = curr_l
+                fvg_bottom = prev_h
+                # Check mitigation: did any subsequent candle low drop into or below FVG bottom?
+                is_mitigated = any(float(klines_1h[j][3]) <= fvg_bottom for j in range(i + 1, n))
+                is_in_fvg = (fvg_bottom * 0.998 <= current_price <= fvg_top * 1.002)
+                if not is_mitigated:
+                    bullish_fvgs.append({
+                        "type": "Bullish FVG",
+                        "top": fvg_top,
+                        "bottom": fvg_bottom,
+                        "gap_pct": round(gap_pct, 2),
+                        "age_hours": n - 1 - i,
+                        "is_testing": is_in_fvg
+                    })
+                    
+        # Bearish FVG: High of candle i < Low of candle i-2
+        if curr_h < prev_l:
+            gap_size = prev_l - curr_h
+            gap_pct = (gap_size / prev_l) * 100
+            if gap_pct >= 0.2:
+                fvg_top = prev_l
+                fvg_bottom = curr_h
+                is_mitigated = any(float(klines_1h[j][2]) >= fvg_top for j in range(i + 1, n))
+                is_in_fvg = (fvg_bottom * 0.998 <= current_price <= fvg_top * 1.002)
+                if not is_mitigated:
+                    bearish_fvgs.append({
+                        "type": "Bearish FVG",
+                        "top": fvg_top,
+                        "bottom": fvg_bottom,
+                        "gap_pct": round(gap_pct, 2),
+                        "age_hours": n - 1 - i,
+                        "is_testing": is_in_fvg
+                    })
+                    
+    return (bullish_fvgs[-1] if bullish_fvgs else None), (bearish_fvgs[-1] if bearish_fvgs else None)
+
+def detect_liquidity_sweep(klines_1h):
+    if not klines_1h or len(klines_1h) < 25:
+        return {"has_bull_sweep": False, "has_bear_sweep": False, "details": "None"}
+    highs = [float(k[2]) for k in klines_1h]
+    lows = [float(k[3]) for k in klines_1h]
+    closes = [float(k[4]) for k in klines_1h]
+    n = len(klines_1h)
+    
+    lookback_high = max(highs[-30:-3])
+    lookback_low = min(lows[-30:-3])
+    
+    has_bull_sweep = any(lows[i] < lookback_low and closes[i] > lookback_low for i in range(n - 3, n))
+    has_bear_sweep = any(highs[i] > lookback_high and closes[i] < lookback_high for i in range(n - 3, n))
+    
+    details = "None"
+    if has_bull_sweep:
+        details = f"Sell-side Liquidity Swept (${fmt_price(lookback_low)})"
+    elif has_bear_sweep:
+        details = f"Buy-side Liquidity Swept (${fmt_price(lookback_high)})"
+        
+    return {
+        "has_bull_sweep": has_bull_sweep,
+        "has_bear_sweep": has_bear_sweep,
+        "lookback_high": lookback_high,
+        "lookback_low": lookback_low,
+        "details": details
+    }
+
+def detect_1h_order_blocks(klines_1h, bull_fvg=None, bear_fvg=None):
     if not klines_1h or len(klines_1h) < 20:
         return None, None
 
@@ -278,29 +479,41 @@ def detect_1h_order_blocks(klines_1h):
         o, h, l, c = float(klines_1h[i][1]), float(klines_1h[i][2]), float(klines_1h[i][3]), float(klines_1h[i][4])
         next_o, next_h, next_l, next_c = float(klines_1h[i+1][1]), float(klines_1h[i+1][2]), float(klines_1h[i+1][3]), float(klines_1h[i+1][4])
         
-        if c < o and (next_c - next_o) > (avg_body * 1.3) and next_c > h:
+        # Bullish OB: Bearish candle followed by strong bullish displacement
+        if c < o and (next_c - next_o) > (avg_body * 1.2) and next_c > h:
             ob_top = h
             ob_bottom = l
-            is_mitigated = any(float(klines_1h[j][4]) < ob_bottom for j in range(i + 2, n))
-            if not is_mitigated:
+            # True Mitigation: Did subsequent price touch into the OB zone?
+            touches = sum(1 for j in range(i + 2, n) if float(klines_1h[j][3]) <= ob_top and float(klines_1h[j][2]) >= ob_bottom)
+            is_invalidated = any(float(klines_1h[j][4]) < ob_bottom for j in range(i + 2, n))
+            
+            # An institutional OB is highest quality if fresh (tested <= 2 times) and not broken
+            if not is_invalidated and touches <= 2:
                 bullish_obs.append({
                     "type": "Bullish 1H OB (Demand)",
                     "top": ob_top,
                     "bottom": ob_bottom,
                     "age_hours": n - 1 - i,
+                    "touches": touches,
+                    "has_fvg": bool(bull_fvg and bull_fvg['age_hours'] >= (n - 1 - i - 2)),
                     "is_testing": (ob_bottom * 0.995 <= current_price <= ob_top * 1.015)
                 })
 
-        if c > o and (next_o - next_c) > (avg_body * 1.3) and next_c < l:
+        # Bearish OB: Bullish candle followed by strong bearish displacement
+        if c > o and (next_o - next_c) > (avg_body * 1.2) and next_c < l:
             ob_top = h
             ob_bottom = l
-            is_mitigated = any(float(klines_1h[j][4]) > ob_top for j in range(i + 2, n))
-            if not is_mitigated:
+            touches = sum(1 for j in range(i + 2, n) if float(klines_1h[j][2]) >= ob_bottom and float(klines_1h[j][3]) <= ob_top)
+            is_invalidated = any(float(klines_1h[j][4]) > ob_top for j in range(i + 2, n))
+            
+            if not is_invalidated and touches <= 2:
                 bearish_obs.append({
                     "type": "Bearish 1H OB (Supply)",
                     "top": ob_top,
                     "bottom": ob_bottom,
                     "age_hours": n - 1 - i,
+                    "touches": touches,
+                    "has_fvg": bool(bear_fvg and bear_fvg['age_hours'] >= (n - 1 - i - 2)),
                     "is_testing": (ob_bottom * 0.985 <= current_price <= ob_top * 1.005)
                 })
 
@@ -365,12 +578,43 @@ def detect_1h_choch(klines_1h):
         "status": "Bearish CHoCH Confirmed" if has_bearish_choch else ("Bullish CHoCH Confirmed" if has_bullish_choch else "Waiting for CHoCH")
     }
 
-def analyze_symbol(symbol, anchored_signal=None, btc_sentiment=None):
+def get_4h_macro_bias(symbol):
+    klines_4h = get_klines(symbol, interval="4h", limit=50)
+    if not klines_4h or len(klines_4h) < 25:
+        return {"bias": "NEUTRAL", "ema_status": "NEUTRAL", "reason": "Insufficient 4H Data"}
+        
+    closes = [float(k[4]) for k in klines_4h]
+    ema20_series = calculate_ema(closes, 20)
+    ema50_series = calculate_ema(closes, 50)
+    
+    if not ema20_series or not ema50_series:
+        return {"bias": "NEUTRAL", "ema_status": "NEUTRAL", "reason": "Calculating"}
+        
+    curr_c = closes[-1]
+    e20 = ema20_series[-1]
+    e50 = ema50_series[-1]
+    rsi_4h = calculate_rsi(closes, 14)
+    
+    is_bull = (e20 > e50) and (curr_c >= e50 * 0.985)
+    is_bear = (e20 < e50) and (curr_c <= e50 * 1.015)
+    
+    bias = "BULLISH" if is_bull else ("BEARISH" if is_bear else "NEUTRAL")
+    return {
+        "bias": bias,
+        "ema20_4h": e20,
+        "ema50_4h": e50,
+        "rsi_4h": round(rsi_4h, 1),
+        "reason": f"4H 20/50 EMA: {'Bullish' if e20 > e50 else 'Bearish'} | 4H RSI: {rsi_4h:.1f}"
+    }
+
+def analyze_symbol(symbol, anchored_signal=None, btc_sentiment=None, session_info=None):
     daily_klines = get_klines(symbol, interval="1d", limit=100)
     klines_1h = get_klines(symbol, interval="1h", limit=80)
     
-    if not daily_klines or len(daily_klines) < 50 or not klines_1h:
+    if not daily_klines or len(daily_klines) < 50 or not klines_1h or len(klines_1h) < 30:
         return None
+        
+    session_info = session_info or get_market_session()
     
     close_prices = [float(k[4]) for k in daily_klines]
     volumes = [float(k[5]) for k in daily_klines]
@@ -385,11 +629,15 @@ def analyze_symbol(symbol, anchored_signal=None, btc_sentiment=None):
     nearest_support = max(supports_below) if supports_below else min(historical_closes[-30:])
     nearest_resistance = min(resistances_above) if resistances_above else max(historical_closes[-30:])
     
-    resistances_below = [r for r in resistances if r < current_price]
-    recent_broken_resistance = max(resistances_below) if resistances_below else None
-
-    bull_ob_1h, bear_ob_1h = detect_1h_order_blocks(klines_1h)
+    # 1H Confluences: FVG, Liquidity Sweeps, Order Blocks, CHoCH, ATR
+    bull_fvg_1h, bear_fvg_1h = detect_1h_fvg(klines_1h)
+    sweep_1h = detect_liquidity_sweep(klines_1h)
+    bull_ob_1h, bear_ob_1h = detect_1h_order_blocks(klines_1h, bull_fvg_1h, bear_fvg_1h)
     choch_data = detect_1h_choch(klines_1h)
+    atr_1h = calculate_atr(klines_1h, 14)
+    
+    # 4H Macro Bias
+    mtf_4h = get_4h_macro_bias(symbol)
     
     ema_20_series = calculate_ema(close_prices, 20)
     ema_50_series = calculate_ema(close_prices, 50)
@@ -411,13 +659,24 @@ def analyze_symbol(symbol, anchored_signal=None, btc_sentiment=None):
     dist_to_support_pct = ((current_price - nearest_support) / current_price) * 100
     dist_to_resistance_pct = ((nearest_resistance - current_price) / current_price) * 100
 
+    # Strict S/R Flip Validation: Broken recently (within 15 days) with volume expansion
     is_sr_flip = False
     flip_lvl = None
-    if recent_broken_resistance:
-        dist_above_flip = ((current_price - recent_broken_resistance) / current_price) * 100
-        if 0.1 <= dist_above_flip <= 3.5:
-            is_sr_flip = True
-            flip_lvl = recent_broken_resistance
+    resistances_below = [r for r in resistances if r < current_price]
+    if resistances_below:
+        candidate_res = max(resistances_below)
+        breakout_valid = False
+        # Look for candle within last 15 days that closed above candidate_res with volume
+        for idx in range(max(1, len(close_prices)-15), len(close_prices)):
+            if close_prices[idx] > candidate_res and close_prices[idx-1] <= candidate_res:
+                if volumes[idx] >= vol_sma_20 * 1.05:
+                    breakout_valid = True
+                    break
+        if breakout_valid:
+            dist_above = ((current_price - candidate_res) / current_price) * 100
+            if 0.1 <= dist_above <= 2.8:
+                is_sr_flip = True
+                flip_lvl = candidate_res
 
     signal_type = "WATCHLIST"
     tier_badge = "WATCHLIST"
@@ -429,15 +688,21 @@ def analyze_symbol(symbol, anchored_signal=None, btc_sentiment=None):
     tp1 = 0
     tp2 = 0
     ob_info_str = "None"
+    fvg_str = "None"
+    sweep_str = sweep_1h.get("details", "None")
     choch_badge = "No CHoCH"
     limit_setup = None
     action_status = "MONITORING"
     action_label = "Monitoring Structure"
+    trailing_sl = 0
+
+    if bull_fvg_1h:
+        fvg_str = f"Bullish FVG [${fmt_price(bull_fvg_1h['bottom'])} - ${fmt_price(bull_fvg_1h['top'])}]"
+    elif bear_fvg_1h:
+        fvg_str = f"Bearish FVG [${fmt_price(bear_fvg_1h['bottom'])} - ${fmt_price(bear_fvg_1h['top'])}]"
 
     # =========================================================================
     # CASE 1: ACTIVE OPEN TRADE (Anchored from trade_history.json)
-    # The trade is ALREADY OPEN. Maintain frozen entry, SL, TP1, TP2, TP3.
-    # Categorize as RUNNING (in profit) or READY (in entry zone) or LIMIT.
     # =========================================================================
     if anchored_signal:
         signal_type = anchored_signal.get("type", "BUY / LONG")
@@ -445,30 +710,38 @@ def analyze_symbol(symbol, anchored_signal=None, btc_sentiment=None):
         trade_setup = anchored_signal.get("setup", "Active SMC Trade")
         entry = anchored_signal.get("entry", current_price)
         sl = anchored_signal.get("sl", 0)
+        trailing_sl = anchored_signal.get("trailing_sl", sl)
         tp = anchored_signal.get("tp", 0)
         tp1 = anchored_signal.get("tp1", 0)
         tp2 = anchored_signal.get("tp2", 0)
         limit_setup = anchored_signal.get("limit_setup")
+        status_state = anchored_signal.get("status", "OPEN")
         
         is_long = "BUY" in signal_type or "LONG" in signal_type
         diff_pct = ((current_price - entry) / entry * 100) if is_long else ((entry - current_price) / entry * 100)
         raw_diff_pct = ((current_price - entry) / entry * 100)
         
-        is_sl_hit = (sl > 0) and ((current_price <= sl) if is_long else (current_price >= sl))
+        is_sl_hit = (trailing_sl > 0) and ((current_price <= trailing_sl) if is_long else (current_price >= trailing_sl))
         is_tp_hit = (tp > 0) and ((current_price >= tp) if is_long else (current_price <= tp))
 
         if is_sl_hit:
             action_status = "STOPPED"
             action_label = "SL BREACHED (Do Not Enter)"
-        elif is_tp_hit or anchored_signal.get("tp1_hit"):
+        elif status_state == "TP2_LOCKED_RUNNING":
             action_status = "RUNNING"
-            action_label = f"TP SECURED | Running (+{diff_pct:.2f}%)" if anchored_signal.get("tp1_hit") else f"TARGET HIT (+{diff_pct:.2f}%)"
+            action_label = f"TP2 HIT | +1.5R LOCKED | Running (+{diff_pct:.2f}%)"
+        elif status_state == "TP1_BE_RUNNING":
+            action_status = "RUNNING"
+            action_label = f"TP1 SECURED | SL @ True BE (+{diff_pct:.2f}%)"
+        elif is_tp_hit:
+            action_status = "RUNNING"
+            action_label = f"TARGET HIT (+{diff_pct:.2f}%)"
         elif diff_pct > 0.75:
             action_status = "RUNNING"
             action_label = f"RUNNING IN PROFIT (+{diff_pct:.2f}%)"
-        elif limit_setup:
+        elif status_state == "PENDING_LIMIT" and limit_setup:
             action_status = "LIMIT"
-            action_label = f"SET LIMIT @ ${limit_setup['limit_entry']}"
+            action_label = f"WAIT FOR LIMIT @ ${limit_setup['limit_entry']}"
         elif abs(raw_diff_pct) <= 0.75:
             action_status = "READY"
             action_label = f"IN ENTRY ZONE ({raw_diff_pct:+.2f}%)"
@@ -480,37 +753,27 @@ def analyze_symbol(symbol, anchored_signal=None, btc_sentiment=None):
             action_label = f"IN ENTRY ZONE ({raw_diff_pct:+.2f}%)"
 
         reasons.append(f"Active trade running: Entry ${fmt_price(entry)} | Live: ${fmt_price(current_price)} ({diff_pct:+.2f}%)")
-        if anchored_signal.get("tp1_hit"):
-            reasons.append("TP1 (1:1.5) Secured! 50% Profit locked, SL at Break-Even.")
-        reasons.append(f"Trend: {'Bullish (20>50 EMA)' if ema_bullish else 'Bearish (20<50 EMA)'} | Daily RSI: {rsi_daily:.1f}")
+        if status_state == "TP2_LOCKED_RUNNING":
+            reasons.append(f"🔒 Phase 2: SL Trailed to TP1 (${fmt_price(trailing_sl)}) - Guaranteed +1.5R Profit locked!")
+        elif status_state == "TP1_BE_RUNNING":
+            reasons.append(f"🛡️ Phase 1: TP1 Hit, SL at True Break-Even (${fmt_price(trailing_sl)}) with Fee Buffer.")
+        reasons.append(f"4H Macro: {mtf_4h['bias']} | Daily Trend: {'Bullish' if ema_bullish else 'Bearish'}")
         
-        if is_long:
-            if bull_ob_1h:
-                ob_info_str = f"Bullish 1H OB [${fmt_price(bull_ob_1h['bottom'])} - ${fmt_price(bull_ob_1h['top'])}]"
-                reasons.append(f"1H Demand Order Block: {ob_info_str}")
-            elif bear_ob_1h:
-                ob_info_str = f"Bearish 1H OB [${fmt_price(bear_ob_1h['bottom'])} - ${fmt_price(bear_ob_1h['top'])}]"
-                reasons.append(f"1H Supply Order Block: {ob_info_str}")
-        else:
-            if bear_ob_1h:
-                ob_info_str = f"Bearish 1H OB [${fmt_price(bear_ob_1h['bottom'])} - ${fmt_price(bear_ob_1h['top'])}]"
-                reasons.append(f"1H Supply Order Block: {ob_info_str}")
-            elif bull_ob_1h:
-                ob_info_str = f"Bullish 1H OB [${fmt_price(bull_ob_1h['bottom'])} - ${fmt_price(bull_ob_1h['top'])}]"
-                reasons.append(f"1H Demand Order Block: {ob_info_str}")
-        if choch_data["has_bullish_choch"]:
-            choch_badge = "1H CHoCH Confirmed 🟢"
-        elif choch_data["has_bearish_choch"]:
-            choch_badge = "1H CHoCH Confirmed 🔴"
+        if is_long and bull_ob_1h:
+            ob_info_str = f"Bullish 1H OB [${fmt_price(bull_ob_1h['bottom'])} - ${fmt_price(bull_ob_1h['top'])}]"
+        elif not is_long and bear_ob_1h:
+            ob_info_str = f"Bearish 1H OB [${fmt_price(bear_ob_1h['bottom'])} - ${fmt_price(bear_ob_1h['top'])}]"
 
     # =========================================================================
-    # CASE 2: NEW POTENTIAL SIGNALS (Scan fresh setups)
+    # CASE 2: NEW POTENTIAL SIGNALS (Scan Fresh Setups)
     # =========================================================================
     else:
         is_extreme_overbought = (rsi_daily >= 78.0) or (rsi_1h >= 80.0)
         is_extreme_oversold = (rsi_daily <= 22.0) or (rsi_1h <= 20.0)
 
-        # TIER 2: SNIPER EXTREME REVERSALS
+        # ---------------------------------------------------------------------
+        # TIER 2: SNIPER EXTREME REVERSALS (RSI Exhaustion + CHoCH + Sweep)
+        # ---------------------------------------------------------------------
         if is_extreme_overbought and choch_data["has_bearish_choch"]:
             has_demand_conflict = bull_ob_1h and (bull_ob_1h.get('is_testing') or (bull_ob_1h['bottom'] * 0.99 <= entry <= bull_ob_1h['top'] * 1.005))
             btc_blocks_short = btc_sentiment and not btc_sentiment.get("allow_shorts", True) and symbol != "BTCUSDT"
@@ -519,7 +782,7 @@ def analyze_symbol(symbol, anchored_signal=None, btc_sentiment=None):
                 signal_type = "WATCHLIST"
                 tier_badge = "WATCHLIST"
                 if has_demand_conflict:
-                    reasons.append(f"⚠️ Sniper Short Blocked: Entry sitting on 1H Bullish Demand Block [${bull_ob_1h['bottom']:.4f} - ${bull_ob_1h['top']:.4f}]")
+                    reasons.append(f"⚠️ Sniper Short Blocked: Sitting directly on 1H Bullish Demand Block")
                 if btc_blocks_short:
                     reasons.append(f"⚠️ BTC Pump Shield: Bitcoin pumping ({btc_sentiment['reason']}), Short signals paused")
             else:
@@ -527,18 +790,24 @@ def analyze_symbol(symbol, anchored_signal=None, btc_sentiment=None):
                 tier_badge = "🔥 TIER 2: SNIPER EXTREME"
                 trade_setup = "Extreme Overbought (RSI > 80) + 1H Bearish CHoCH"
                 choch_badge = "1H CHoCH Confirmed 🔴"
-                sl = choch_data["recent_high"] * 1.025
+                
+                # Dynamic ATR Stop Loss: Anchor above swing high + 1.2 * ATR
+                sl_base = max(choch_data["recent_high"], entry * 1.01)
+                sl = sl_base + (1.2 * atr_1h)
                 risk = sl - entry
-                if risk / entry < 0.028:
-                    sl = entry * 1.028
+                if risk / entry < 0.015:
+                    sl = entry * 1.015
                     risk = sl - entry
+                trailing_sl = sl
                 tp1 = entry - (risk * 1.5)
                 tp2 = entry - (risk * 2.0)
                 tp = entry - (risk * 3.0)
                 reasons.append(f"Extreme RSI Overbought ({rsi_daily:.1f})")
                 reasons.append(f"Confirmed 1H Bearish CHoCH below ${choch_data['key_hl']}")
-                if bear_ob_1h:
-                    ob_info_str = f"Bearish 1H OB [${bear_ob_1h['bottom']:.4f} - ${bear_ob_1h['top']:.4f}]"
+                if sweep_1h["has_bear_sweep"]:
+                    reasons.append(f"⚡ Liquidity Sweep: {sweep_1h['details']}")
+                if bear_fvg_1h:
+                    reasons.append(f"💧 Bearish FVG Confluence [${fmt_price(bear_fvg_1h['bottom'])} - ${fmt_price(bear_fvg_1h['top'])}]")
 
         elif is_extreme_oversold and choch_data["has_bullish_choch"]:
             has_supply_conflict = bear_ob_1h and (bear_ob_1h.get('is_testing') or (bear_ob_1h['bottom'] * 0.995 <= entry <= bear_ob_1h['top'] * 1.01))
@@ -548,7 +817,7 @@ def analyze_symbol(symbol, anchored_signal=None, btc_sentiment=None):
                 signal_type = "WATCHLIST"
                 tier_badge = "WATCHLIST"
                 if has_supply_conflict:
-                    reasons.append(f"⚠️ Sniper Long Blocked: Entry inside 1H Bearish Supply Block [${bear_ob_1h['bottom']:.4f} - ${bear_ob_1h['top']:.4f}]")
+                    reasons.append(f"⚠️ Sniper Long Blocked: Sitting inside 1H Bearish Supply Block")
                 if btc_blocks_long:
                     reasons.append(f"⚠️ BTC Dump Shield: Bitcoin dumping ({btc_sentiment['reason']}), Long signals paused")
             else:
@@ -556,21 +825,29 @@ def analyze_symbol(symbol, anchored_signal=None, btc_sentiment=None):
                 tier_badge = "🔥 TIER 2: SNIPER EXTREME"
                 trade_setup = "Extreme Oversold (RSI < 20) + 1H Bullish CHoCH"
                 choch_badge = "1H CHoCH Confirmed 🟢"
-                sl = choch_data["recent_low"] * 0.975
+                
+                # Dynamic ATR Stop Loss: Anchor below swing low - 1.2 * ATR
+                sl_base = min(choch_data["recent_low"], entry * 0.99)
+                sl = sl_base - (1.2 * atr_1h)
                 risk = entry - sl
-                if risk / entry < 0.028:
-                    sl = entry * 0.972
+                if risk / entry < 0.015:
+                    sl = entry * 0.985
                     risk = entry - sl
+                trailing_sl = sl
                 tp1 = entry + (risk * 1.5)
                 tp2 = entry + (risk * 2.0)
                 tp = entry + (risk * 3.0)
                 reasons.append(f"Extreme RSI Oversold ({rsi_daily:.1f})")
                 reasons.append(f"Confirmed 1H Bullish CHoCH above ${choch_data['key_lh']}")
-                if bull_ob_1h:
-                    ob_info_str = f"Bullish 1H OB [${bull_ob_1h['bottom']:.4f} - ${bull_ob_1h['top']:.4f}]"
+                if sweep_1h["has_bull_sweep"]:
+                    reasons.append(f"⚡ Liquidity Sweep: {sweep_1h['details']}")
+                if bull_fvg_1h:
+                    reasons.append(f"💧 Bullish FVG Confluence [${fmt_price(bull_fvg_1h['bottom'])} - ${fmt_price(bull_fvg_1h['top'])}]")
 
-        # TIER 1: DAILY BREAD & BUTTER
-        elif ema_bullish and (dist_to_support_pct <= 3.5 or is_sr_flip) and (38 <= rsi_daily <= 68):
+        # ---------------------------------------------------------------------
+        # TIER 1: INSTITUTIONAL SMC (4H Trend + Daily Line S&R + 1H OB/FVG)
+        # ---------------------------------------------------------------------
+        elif ema_bullish and mtf_4h["bias"] != "BEARISH" and (dist_to_support_pct <= 3.5 or is_sr_flip) and (38 <= rsi_daily <= 68):
             has_supply_conflict = bear_ob_1h and (bear_ob_1h.get('is_testing') or (bear_ob_1h['bottom'] * 0.995 <= entry <= bear_ob_1h['top'] * 1.01))
             btc_blocks_long = btc_sentiment and not btc_sentiment.get("allow_longs", True) and symbol != "BTCUSDT"
 
@@ -578,37 +855,40 @@ def analyze_symbol(symbol, anchored_signal=None, btc_sentiment=None):
                 signal_type = "WATCHLIST"
                 tier_badge = "WATCHLIST"
                 if has_supply_conflict:
-                    trade_setup = f"Long Blocked: Testing 1H Supply OB [${bear_ob_1h['bottom']:.4f} - ${bear_ob_1h['top']:.4f}]"
-                    reasons.append(f"⚠️ SMC Shield: Blocked Long into 1H Bearish Supply Block [${bear_ob_1h['bottom']:.4f} - ${bear_ob_1h['top']:.4f}]")
+                    trade_setup = f"Long Blocked: Inside 1H Supply OB"
+                    reasons.append(f"⚠️ SMC Shield: Blocked Long into 1H Supply Zone")
                 if btc_blocks_long:
                     reasons.append(f"⚠️ BTC Dump Shield: Bitcoin dumping ({btc_sentiment['reason']}), Long signals paused")
             else:
                 signal_type = "BUY / LONG"
-                tier_badge = "⭐ TIER 1: DAILY SETUP"
-                trade_setup = "Daily Line Support Bounce + 1H Demand OB" if not is_sr_flip else "S/R Flip Breakout & Retest"
+                tier_badge = "⭐ TIER 1: INSTITUTIONAL SMC"
+                trade_setup = "Daily Line Support Bounce + 1H Demand OB" if not is_sr_flip else "Confirmed S/R Flip Breakout & Retest"
                 
                 base_support = flip_lvl if is_sr_flip else nearest_support
                 if bull_ob_1h and bull_ob_1h['bottom'] < entry:
                     base_support = min(base_support, bull_ob_1h['bottom'])
                     
-                # Structural Stop Loss: strictly anchored below OB bottom or Daily Support with safe 2.5% buffer
-                sl = base_support * 0.975
+                # Dynamic ATR Volatility Stop Loss
+                sl = base_support - (1.2 * atr_1h)
                 risk = entry - sl
-                if risk / entry < 0.028:
-                    sl = entry * 0.972
+                if risk / entry < 0.015:
+                    sl = entry * 0.985
                     risk = entry - sl
-                    
+                trailing_sl = sl
                 tp1 = entry + (risk * 1.5)
                 tp2 = entry + (risk * 2.0)
                 tp = entry + (risk * 3.0)
-                reasons.append(f"Holding Daily Line Support ${base_support:.4f} (+{dist_to_support_pct:.1f}%)")
-                reasons.append("20 EMA > 50 EMA Bullish Trend Aligned")
-                reasons.append(f"RSI {rsi_daily:.1f} in healthy bullish momentum")
+                
+                reasons.append(f"4H Macro Bias: {mtf_4h['bias']} + Daily 20/50 EMA Bullish")
+                reasons.append(f"Holding S&R Base ${fmt_price(base_support)} (ATR Volatility Buffer: ${fmt_price(1.2 * atr_1h)})")
+                if bull_fvg_1h:
+                    reasons.append(f"💧 Bullish FVG Active: [${fmt_price(bull_fvg_1h['bottom'])} - ${fmt_price(bull_fvg_1h['top'])}]")
+                if sweep_1h["has_bull_sweep"]:
+                    reasons.append(f"⚡ Sell-Side Liquidity Swept (${fmt_price(sweep_1h['lookback_low'])})")
                 if bull_ob_1h:
-                    ob_info_str = f"Bullish 1H OB [${bull_ob_1h['bottom']:.4f} - ${bull_ob_1h['top']:.4f}]"
-                    reasons.append(f"1H Demand Order Block Active: {ob_info_str}")
+                    ob_info_str = f"Bullish 1H OB [${fmt_price(bull_ob_1h['bottom'])} - ${fmt_price(bull_ob_1h['top'])}]"
 
-        elif (not ema_bullish) and (dist_to_resistance_pct <= 3.5) and (32 <= rsi_daily <= 62):
+        elif (not ema_bullish) and mtf_4h["bias"] != "BULLISH" and (dist_to_resistance_pct <= 3.5) and (32 <= rsi_daily <= 62):
             has_demand_conflict = bull_ob_1h and (bull_ob_1h.get('is_testing') or (bull_ob_1h['bottom'] * 0.99 <= entry <= bull_ob_1h['top'] * 1.005))
             btc_blocks_short = btc_sentiment and not btc_sentiment.get("allow_shorts", True) and symbol != "BTCUSDT"
 
@@ -616,35 +896,38 @@ def analyze_symbol(symbol, anchored_signal=None, btc_sentiment=None):
                 signal_type = "WATCHLIST"
                 tier_badge = "WATCHLIST"
                 if has_demand_conflict:
-                    trade_setup = f"Short Blocked: Testing 1H Demand OB [${bull_ob_1h['bottom']:.4f} - ${bull_ob_1h['top']:.4f}]"
-                    reasons.append(f"⚠️ SMC Shield: Blocked Short into 1H Bullish Demand Block [${bull_ob_1h['bottom']:.4f} - ${bull_ob_1h['top']:.4f}]")
+                    trade_setup = f"Short Blocked: Inside 1H Demand OB"
+                    reasons.append(f"⚠️ SMC Shield: Blocked Short into 1H Demand Zone")
                 if btc_blocks_short:
-                    reasons.append(f"⚠️ BTC Pump Shield: Bitcoin pumping aggressively ({btc_sentiment['reason']}), Short signals paused")
+                    reasons.append(f"⚠️ BTC Pump Shield: Bitcoin pumping ({btc_sentiment['reason']}), Short signals paused")
             else:
                 signal_type = "SELL / SHORT"
-                tier_badge = "⭐ TIER 1: DAILY SETUP"
+                tier_badge = "⭐ TIER 1: INSTITUTIONAL SMC"
                 trade_setup = "Daily Line Resistance Rejection + 1H Supply OB"
                 
                 base_res = nearest_resistance
                 if bear_ob_1h and bear_ob_1h['top'] > entry:
                     base_res = max(base_res, bear_ob_1h['top'])
                     
-                # Structural Stop Loss: strictly anchored above OB top or Daily Resistance with safe 2.5% buffer
-                sl = base_res * 1.025
+                # Dynamic ATR Volatility Stop Loss
+                sl = base_res + (1.2 * atr_1h)
                 risk = sl - entry
-                if risk / entry < 0.028:
-                    sl = entry * 1.028
+                if risk / entry < 0.015:
+                    sl = entry * 1.015
                     risk = sl - entry
-                    
+                trailing_sl = sl
                 tp1 = entry - (risk * 1.5)
                 tp2 = entry - (risk * 2.0)
                 tp = entry - (risk * 3.0)
-                reasons.append(f"Testing Daily Line Resistance ${base_res:.4f}")
-                reasons.append("20 EMA < 50 EMA Bearish Trend Aligned")
-                reasons.append(f"RSI {rsi_daily:.1f} in bearish momentum")
+                
+                reasons.append(f"4H Macro Bias: {mtf_4h['bias']} + Daily 20/50 EMA Bearish")
+                reasons.append(f"Testing Resistance Base ${fmt_price(base_res)} (ATR Buffer: ${fmt_price(1.2 * atr_1h)})")
+                if bear_fvg_1h:
+                    reasons.append(f"💧 Bearish FVG Active: [${fmt_price(bear_fvg_1h['bottom'])} - ${fmt_price(bear_fvg_1h['top'])}]")
+                if sweep_1h["has_bear_sweep"]:
+                    reasons.append(f"⚡ Buy-Side Liquidity Swept (${fmt_price(sweep_1h['lookback_high'])})")
                 if bear_ob_1h:
-                    ob_info_str = f"Bearish 1H OB [${bear_ob_1h['bottom']:.4f} - ${bear_ob_1h['top']:.4f}]"
-                    reasons.append(f"1H Supply Order Block Active: {ob_info_str}")
+                    ob_info_str = f"Bearish 1H OB [${fmt_price(bear_ob_1h['bottom'])} - ${fmt_price(bear_ob_1h['top'])}]"
 
         else:
             signal_type = "WATCHLIST"
@@ -655,13 +938,13 @@ def analyze_symbol(symbol, anchored_signal=None, btc_sentiment=None):
                 reasons.append(f"Protected against Parabolic Pump: Waiting for 1H CHoCH below ${choch_data['key_hl']}")
             else:
                 tier_badge = "WATCHLIST"
-                reasons.append(f"Mid-range RSI ({rsi_daily:.1f}). Daily Line S&R: Sup ${nearest_support:.4f} | Res ${nearest_resistance:.4f}")
+                reasons.append(f"Mid-range RSI ({rsi_daily:.1f}). Daily S&R: Sup ${fmt_price(nearest_support)} | Res ${fmt_price(nearest_resistance)}")
                 if choch_data["has_bearish_choch"]:
                     choch_badge = "1H CHoCH Bearish"
                 elif choch_data["has_bullish_choch"]:
                     choch_badge = "1H CHoCH Bullish"
 
-        # Check for limit setup on fresh signals
+        # Check for Pending Limit Retest on fresh signals
         if signal_type == "BUY / LONG" and bull_ob_1h and bull_ob_1h['top'] < entry:
             dist_to_ob_pct = ((entry - bull_ob_1h['top']) / entry) * 100
             if dist_to_ob_pct >= 2.0:
@@ -675,9 +958,13 @@ def analyze_symbol(symbol, anchored_signal=None, btc_sentiment=None):
                     "limit_entry": fmt_price(l_entry),
                     "raw_limit_entry": l_entry,
                     "limit_sl": fmt_price(l_sl),
+                    "raw_limit_sl": l_sl,
                     "limit_tp1": fmt_price(l_tp1),
+                    "raw_limit_tp1": l_tp1,
                     "limit_tp2": fmt_price(l_tp2),
+                    "raw_limit_tp2": l_tp2,
                     "limit_tp": fmt_price(l_tp),
+                    "raw_limit_tp": l_tp,
                     "risk_pct": f"{((l_risk / l_entry) * 100):.2f}%",
                     "reward_pct": f"{(((l_tp - l_entry) / l_entry) * 100):.2f}%",
                     "dist_pct": f"{dist_to_ob_pct:.1f}%"
@@ -695,9 +982,13 @@ def analyze_symbol(symbol, anchored_signal=None, btc_sentiment=None):
                     "limit_entry": fmt_price(l_entry),
                     "raw_limit_entry": l_entry,
                     "limit_sl": fmt_price(l_sl),
+                    "raw_limit_sl": l_sl,
                     "limit_tp1": fmt_price(l_tp1),
+                    "raw_limit_tp1": l_tp1,
                     "limit_tp2": fmt_price(l_tp2),
+                    "raw_limit_tp2": l_tp2,
                     "limit_tp": fmt_price(l_tp),
+                    "raw_limit_tp": l_tp,
                     "risk_pct": f"{((l_risk / l_entry) * 100):.2f}%",
                     "reward_pct": f"{(((l_entry - l_tp) / l_entry) * 100):.2f}%",
                     "dist_pct": f"{dist_to_ob_pct:.1f}%"
@@ -727,11 +1018,16 @@ def analyze_symbol(symbol, anchored_signal=None, btc_sentiment=None):
         "signal": signal_type,
         "tier_badge": tier_badge,
         "setup": trade_setup if trade_setup else "Monitoring Structure",
+        "session_badge": session_info["badge"],
+        "session_name": session_info["name"],
+        "mtf_status": mtf_4h["bias"],
+        "fvg_str": fvg_str,
+        "sweep_str": sweep_str,
         "choch_badge": choch_badge,
-        "choch_data": choch_data,
         "order_block_1h": ob_info_str,
         "rsi_daily": round(rsi_daily, 1),
         "rsi_1h": round(rsi_1h, 1),
+        "atr_1h": fmt_price(atr_1h),
         "ema_20": fmt_price(ema_20),
         "ema_50": fmt_price(ema_50),
         "ema_status": "BULLISH (20>50)" if ema_bullish else "BEARISH (20<50)",
@@ -742,6 +1038,8 @@ def analyze_symbol(symbol, anchored_signal=None, btc_sentiment=None):
         "raw_entry": entry,
         "stop_loss": fmt_price(sl) if sl > 0 else "-",
         "raw_sl": sl,
+        "trailing_sl": trailing_sl,
+        "trailing_sl_str": fmt_price(trailing_sl) if trailing_sl > 0 else "-",
         "tp_1": fmt_price(tp1) if tp1 > 0 else "-",
         "raw_tp1": tp1,
         "tp_2": fmt_price(tp2) if tp2 > 0 else "-",
@@ -764,6 +1062,7 @@ def check_and_resolve_open_trades():
         "losses": 0,
         "pending": 0,
         "win_rate_pct": 0.0,
+        "circuit_breaker": {"is_tripped": False, "losses_today": 0, "max_allowed": MAX_DAILY_LOSSES},
         "signals": []
     }
     
@@ -775,71 +1074,164 @@ def check_and_resolve_open_trades():
             pass
 
     existing_signals = history_data.get("signals", [])
+    now_ts = int(datetime.now(timezone.utc).timestamp() * 1000)
+    today_utc = datetime.now(timezone.utc).strftime('%Y-%m-%d')
     
+    # Calculate today's losses for Daily Drawdown Shield
+    today_losses = 0
     for s in existing_signals:
-        if s.get("status") == "OPEN":
+        if "LOSS" in s.get("status", ""):
+            res_date = s.get("resolved_at", "")[:10]
+            if res_date == today_utc:
+                today_losses += 1
+                
+    circuit_breaker_tripped = (today_losses >= MAX_DAILY_LOSSES)
+    if circuit_breaker_tripped and not history_data.get("circuit_breaker", {}).get("is_tripped"):
+        send_telegram_resolution(None, "CIRCUIT_BREAKER")
+
+    history_data["circuit_breaker"] = {
+        "is_tripped": circuit_breaker_tripped,
+        "losses_today": today_losses,
+        "max_allowed": MAX_DAILY_LOSSES
+    }
+
+    for s in existing_signals:
+        curr_status = s.get("status", "OPEN")
+        if curr_status in ["OPEN", "PENDING_LIMIT", "TP1_BE_RUNNING", "TP2_LOCKED_RUNNING"]:
             sig_ts = s.get("timestamp", 0)
-            kl = get_klines(s["symbol"], interval="1h", limit=50)
-            if kl:
-                # Include candle at or after signal creation (with 1h buffer)
+            kl = get_klines(s["symbol"], interval="1h", limit=60)
+            if not kl:
+                continue
+
+            # Ensure trailing_sl exists
+            if "trailing_sl" not in s or s["trailing_sl"] == 0:
+                s["trailing_sl"] = s.get("sl", 0)
+                s["trailing_sl_str"] = fmt_price(s["trailing_sl"])
+
+            # -----------------------------------------------------------------
+            # 1. PENDING LIMIT ORDERS: Check if filled or expired
+            # -----------------------------------------------------------------
+            if curr_status == "PENDING_LIMIT":
+                ls = s.get("limit_setup")
+                if not ls:
+                    s["status"] = "OPEN"
+                    continue
+                    
+                l_entry = ls.get("raw_limit_entry", 0)
+                # Check if 24 hours passed
+                if (now_ts - sig_ts) > (LIMIT_EXPIRY_HOURS * 3600 * 1000):
+                    s["status"] = "EXPIRED (Limit Unfilled)"
+                    s["resolved_at"] = datetime.now().strftime('%Y-%m-%d %H:%M')
+                    continue
+
+                future_bars = [bar for bar in kl if (bar[0] + 3600000) >= sig_ts]
+                is_filled = False
+                for bar in future_bars:
+                    bar_low = float(bar[3])
+                    bar_high = float(bar[2])
+                    if "BUY" in s["type"] or "LONG" in s["type"]:
+                        if bar_low <= l_entry:
+                            is_filled = True
+                            break
+                    elif "SELL" in s["type"] or "SHORT" in s["type"]:
+                        if bar_high >= l_entry:
+                            is_filled = True
+                            break
+
+                if is_filled:
+                    s["status"] = "OPEN"
+                    s["entry"] = l_entry
+                    s["entry_str"] = fmt_price(l_entry)
+                    s["sl"] = ls.get("raw_limit_sl", s["sl"])
+                    s["sl_str"] = fmt_price(s["sl"])
+                    s["trailing_sl"] = s["sl"]
+                    s["trailing_sl_str"] = fmt_price(s["trailing_sl"])
+                    s["tp1"] = ls.get("raw_limit_tp1", s["tp1"])
+                    s["tp1_str"] = fmt_price(s["tp1"])
+                    s["tp2"] = ls.get("raw_limit_tp2", s["tp2"])
+                    s["tp2_str"] = fmt_price(s["tp2"])
+                    s["tp"] = ls.get("raw_limit_tp", s["tp"])
+                    s["tp_str"] = fmt_price(s["tp"])
+                    s["filled_at"] = datetime.now().strftime('%Y-%m-%d %H:%M')
+                    if not s.get("notified_fill"):
+                        s["notified_fill"] = True
+                        send_telegram_resolution(s, "LIMIT_FILLED")
+
+            # -----------------------------------------------------------------
+            # 2. ACTIVE TRADES: Multi-Stage Trailing Break-Even & Safe Execution
+            # -----------------------------------------------------------------
+            if s["status"] in ["OPEN", "TP1_BE_RUNNING", "TP2_LOCKED_RUNNING"]:
                 future_bars = [bar for bar in kl if (bar[0] + 3600000) >= sig_ts]
                 for bar in future_bars:
                     high = float(bar[2])
                     low = float(bar[3])
-                    if "BUY" in s["type"] or "LONG" in s["type"]:
-                        if high >= s["tp"]:
-                            s["status"] = "WIN (1:3 TP3 Hit)"
-                            s["outcome_pnl"] = +3.0
-                            s["resolved_at"] = datetime.now().strftime('%Y-%m-%d %H:%M')
-                            if not s.get("notified_win"):
-                                s["notified_win"] = True
-                                send_telegram_resolution(s, "WIN_TP3")
-                            break
-                        elif s.get("tp1", 0) > 0 and high >= s["tp1"]:
-                            s["tp1_hit"] = True
-                            if not s.get("notified_tp1"):
-                                s["notified_tp1"] = True
-                                send_telegram_resolution(s, "WIN_TP1")
+                    is_long = "BUY" in s["type"] or "LONG" in s["type"]
+                    current_sl = s.get("trailing_sl", s["sl"])
 
-                        if low <= s["sl"]:
-                            if s.get("tp1_hit"):
-                                s["status"] = "WIN (TP1 Hit / SL at BE)"
-                                s["outcome_pnl"] = +0.75
-                            else:
-                                s["status"] = "LOSS (SL Hit)"
-                                s["outcome_pnl"] = -1.0
+                    # CONSERVATIVE SEQUENCING: Prioritize Stop Loss over Take Profit
+                    # If intra-candle flash wick touches SL, execute SL exit first!
+                    is_sl_touched = (low <= current_sl) if is_long else (high >= current_sl)
+                    
+                    if is_sl_touched:
+                        if s["status"] == "TP2_LOCKED_RUNNING":
+                            s["status"] = "WIN (TP2 Trailed / Locked +1.5R)"
+                            s["outcome_pnl"] = +1.5
+                            s["resolved_at"] = datetime.now().strftime('%Y-%m-%d %H:%M')
+                            if not s.get("notified_loss"):
+                                s["notified_loss"] = True
+                                send_telegram_resolution(s, "WIN_LOCKED")
+                        elif s["status"] == "TP1_BE_RUNNING":
+                            s["status"] = "WIN (TP1 Hit / Break-Even Exit)"
+                            s["outcome_pnl"] = +0.75
+                            s["resolved_at"] = datetime.now().strftime('%Y-%m-%d %H:%M')
+                            if not s.get("notified_loss"):
+                                s["notified_loss"] = True
+                                send_telegram_resolution(s, "WIN_BE")
+                        else:
+                            s["status"] = "LOSS (SL Hit)"
+                            s["outcome_pnl"] = -1.0
                             s["resolved_at"] = datetime.now().strftime('%Y-%m-%d %H:%M')
                             if not s.get("notified_loss"):
                                 s["notified_loss"] = True
                                 send_telegram_resolution(s, "LOSS_SL")
-                            break
-                    elif "SELL" in s["type"] or "SHORT" in s["type"]:
-                        if low <= s["tp"]:
-                            s["status"] = "WIN (1:3 TP3 Hit)"
-                            s["outcome_pnl"] = +3.0
-                            s["resolved_at"] = datetime.now().strftime('%Y-%m-%d %H:%M')
-                            if not s.get("notified_win"):
-                                s["notified_win"] = True
-                                send_telegram_resolution(s, "WIN_TP3")
-                            break
-                        elif s.get("tp1", 0) > 0 and low <= s["tp1"]:
-                            s["tp1_hit"] = True
-                            if not s.get("notified_tp1"):
-                                s["notified_tp1"] = True
-                                send_telegram_resolution(s, "WIN_TP1")
+                        break
 
-                        if high >= s["sl"]:
-                            if s.get("tp1_hit"):
-                                s["status"] = "WIN (TP1 Hit / SL at BE)"
-                                s["outcome_pnl"] = +0.75
-                            else:
-                                s["status"] = "LOSS (SL Hit)"
-                                s["outcome_pnl"] = -1.0
-                            s["resolved_at"] = datetime.now().strftime('%Y-%m-%d %H:%M')
-                            if not s.get("notified_loss"):
-                                s["notified_loss"] = True
-                                send_telegram_resolution(s, "LOSS_SL")
-                            break
+                    # Check Take Profit Stages:
+                    # Stage 3: Full TP3 Hit (1:3 Target)
+                    is_tp3_touched = (high >= s["tp"]) if is_long else (low <= s["tp"])
+                    if is_tp3_touched:
+                        s["status"] = "WIN (1:3 TP3 Hit)"
+                        s["outcome_pnl"] = +3.0
+                        s["resolved_at"] = datetime.now().strftime('%Y-%m-%d %H:%M')
+                        if not s.get("notified_win"):
+                            s["notified_win"] = True
+                            send_telegram_resolution(s, "WIN_TP3")
+                        break
+
+                    # Stage 2: TP2 Hit (1:2.0 Target) -> TRAIL SL UP TO TP1 (LOCK +1.5R)
+                    is_tp2_touched = (s.get("tp2", 0) > 0) and ((high >= s["tp2"]) if is_long else (low <= s["tp2"]))
+                    if is_tp2_touched and s["status"] in ["OPEN", "TP1_BE_RUNNING"]:
+                        s["status"] = "TP2_LOCKED_RUNNING"
+                        s["tp2_hit"] = True
+                        # Trail SL up to TP1 to lock in guaranteed profit
+                        s["trailing_sl"] = s.get("tp1", s["entry"])
+                        s["trailing_sl_str"] = fmt_price(s["trailing_sl"])
+                        if not s.get("notified_tp2"):
+                            s["notified_tp2"] = True
+                            send_telegram_resolution(s, "WIN_TP2")
+
+                    # Stage 1: TP1 Hit (1:1.5 Target) -> MOVE SL TO TRUE BREAK-EVEN
+                    is_tp1_touched = (s.get("tp1", 0) > 0) and ((high >= s["tp1"]) if is_long else (low <= s["tp1"]))
+                    if is_tp1_touched and s["status"] == "OPEN":
+                        s["status"] = "TP1_BE_RUNNING"
+                        s["tp1_hit"] = True
+                        # True Break-Even: Entry + 0.2% fee coverage buffer
+                        true_be = s["entry"] * (1.0 + FEE_BUFFER_PCT) if is_long else s["entry"] * (1.0 - FEE_BUFFER_PCT)
+                        s["trailing_sl"] = true_be
+                        s["trailing_sl_str"] = fmt_price(true_be)
+                        if not s.get("notified_tp1"):
+                            s["notified_tp1"] = True
+                            send_telegram_resolution(s, "WIN_TP1")
 
     recalculate_history_stats(history_data)
     with open(HISTORY_FILE, "w", encoding="utf-8") as f:
@@ -849,10 +1241,11 @@ def check_and_resolve_open_trades():
 
 def recalculate_history_stats(history_data):
     existing_signals = history_data.get("signals", [])
-    closed = [s for s in existing_signals if s.get("status") != "OPEN"]
+    active_statuses = ["OPEN", "TP1_BE_RUNNING", "TP2_LOCKED_RUNNING", "PENDING_LIMIT"]
+    closed = [s for s in existing_signals if s.get("status") not in active_statuses]
     wins = len([s for s in existing_signals if "WIN" in s.get("status", "")])
     losses = len([s for s in existing_signals if "LOSS" in s.get("status", "")])
-    pending = len([s for s in existing_signals if s.get("status") == "OPEN"])
+    pending = len([s for s in existing_signals if s.get("status") in active_statuses])
     total_closed = len(closed)
     win_rate = (wins / total_closed * 100) if total_closed > 0 else 0.0
     net_r = round(sum(s.get("outcome_pnl", 0.0) for s in existing_signals), 1)
@@ -876,33 +1269,60 @@ def record_new_signals_to_history(actionable_signals, history_data, open_symbols
     today_str = datetime.now().strftime('%Y-%m-%d')
     existing_keys = {f"{s['symbol']}_{s['date']}_{s['type']}" for s in existing_signals}
 
+    active_positions_count = len([s for s in existing_signals if s.get("status") in ["OPEN", "TP1_BE_RUNNING", "TP2_LOCKED_RUNNING"]])
+    circuit_breaker = history_data.get("circuit_breaker", {})
+    is_circuit_tripped = circuit_breaker.get("is_tripped", False)
+
     for act in actionable_signals:
         sym = act["symbol"]
         sig_type = act["signal"]
         
-        # If already open, do not duplicate!
+        # If already open, sync limit setup if available
         if sym in open_symbols_before_scan:
             for s in existing_signals:
-                if s["symbol"] == sym and s.get("status") == "OPEN":
+                if s["symbol"] == sym and s.get("status") in ["OPEN", "PENDING_LIMIT", "TP1_BE_RUNNING", "TP2_LOCKED_RUNNING"]:
                     if not s.get("limit_setup") and act.get("limit_setup"):
                         s["limit_setup"] = act.get("limit_setup")
             continue
             
+        # 1. Check Circuit Breaker
+        if is_circuit_tripped:
+            act["signal"] = "WATCHLIST"
+            act["tier_badge"] = "🛑 CIRCUIT BREAKER"
+            act["reasons"].append("Daily Drawdown Shield active: Max 2 daily losses hit. New trade signals paused.")
+            continue
+
+        # 2. Check Portfolio Heat Governor (Max 4 active trades)
+        if active_positions_count >= MAX_ACTIVE_POSITIONS:
+            act["signal"] = "WATCHLIST"
+            act["tier_badge"] = "🔥 PORTFOLIO CAP REACHED"
+            act["reasons"].append(f"Risk Governor: Maximum {MAX_ACTIVE_POSITIONS} active positions already open. Setup held in Watchlist.")
+            continue
+
         # Fresh signal
         key = f"{sym}_{today_str}_{sig_type}"
         if key not in existing_keys:
+            is_limit = bool(act.get("limit_setup"))
+            initial_status = "PENDING_LIMIT" if is_limit else "OPEN"
+            initial_sl = act["raw_sl"]
+
             new_item = {
                 "id": len(existing_signals) + 1,
                 "symbol": sym,
                 "type": sig_type,
-                "tier_badge": act.get("tier_badge", "⭐ TIER 1: DAILY SETUP"),
+                "tier_badge": act.get("tier_badge", "⭐ TIER 1: INSTITUTIONAL SMC"),
                 "setup": act["setup"],
+                "session": act.get("session_name", "Global"),
+                "fvg": act.get("fvg_str", "None"),
+                "sweep": act.get("sweep_str", "None"),
                 "date": today_str,
                 "timestamp": current_ts,
                 "entry": act["raw_entry"],
                 "entry_str": act["entry"],
-                "sl": act["raw_sl"],
+                "sl": initial_sl,
                 "sl_str": act["stop_loss"],
+                "trailing_sl": initial_sl,
+                "trailing_sl_str": act["stop_loss"],
                 "tp1": act.get("raw_tp1", 0),
                 "tp1_str": act.get("tp_1", "-"),
                 "tp2": act.get("raw_tp2", 0),
@@ -910,11 +1330,13 @@ def record_new_signals_to_history(actionable_signals, history_data, open_symbols
                 "tp": act["raw_tp"],
                 "tp_str": act["take_profit_1_3"],
                 "limit_setup": act.get("limit_setup"),
-                "status": "OPEN",
+                "status": initial_status,
                 "outcome_pnl": 0.0
             }
             existing_signals.append(new_item)
             existing_keys.add(key)
+            if initial_status == "OPEN":
+                active_positions_count += 1
             send_telegram_new_signal(act)
 
     recalculate_history_stats(history_data)
@@ -942,17 +1364,17 @@ def get_top_pairs(limit=150):
                 if sym in stables_and_junk:
                     continue
                 if sym.endswith('BUSDT') and sym not in real_b_cryptos:
-                    continue  # exclude tokenized equities like TSLABUSDT, GOOGLBUSDT, NVDABUSDT
+                    continue
                 usdt_pairs.append(t)
 
             usdt_pairs.sort(key=lambda x: float(x.get('quoteVolume', 0)), reverse=True)
             top_symbols = [t['symbol'] for t in usdt_pairs[:limit]]
             if len(top_symbols) >= 30:
                 min_vol = float(usdt_pairs[len(top_symbols)-1].get('quoteVolume', 0)) / 1e6
-                print(f"[+] Dynamically selected Top {len(top_symbols)} Pure Crypto USDT Pairs by 24h Volume (Min Vol: ${min_vol:.1f}M)")
+                print(f"[+] Selected Top {len(top_symbols)} Pure Crypto Pairs by 24h Volume (Min Vol: ${min_vol:.1f}M)")
                 return top_symbols
     except Exception as e:
-        print(f"[!] Warning: Dynamic Top 150 fetch failed ({e}). Using curated fallback list.")
+        print(f"[!] Warning: Dynamic Top 150 fetch failed ({e}). Using curated list.")
 
     return [
         "BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT",
@@ -998,24 +1420,32 @@ def get_btc_macro_sentiment():
     }
 
 def scan_all_pairs():
-    # 1. Resolve open trades against latest candles & send TP/SL Telegram alerts
+    # 1. Get active Market Session
+    session_info = get_market_session()
+
+    # 2. Resolve open trades against latest candles & handle trailing stops
     history_data = check_and_resolve_open_trades()
-    open_signals_map = {s["symbol"]: s for s in history_data.get("signals", []) if s.get("status") == "OPEN"}
+    active_statuses = ["OPEN", "TP1_BE_RUNNING", "TP2_LOCKED_RUNNING", "PENDING_LIMIT"]
+    open_signals_map = {s["symbol"]: s for s in history_data.get("signals", []) if s.get("status") in active_statuses}
     open_symbols_before_scan = set(open_signals_map.keys())
 
-    # 2. Check BTC Macro Market Sentiment
+    # 3. Check BTC Macro Market Sentiment
     btc_sentiment = get_btc_macro_sentiment()
+    circuit_breaker = history_data.get("circuit_breaker", {})
 
-    # 3. Get Top 150 liquid pairs to scan (ensure all open trades are included)
+    # 4. Get Top 150 liquid pairs
     pairs = get_top_pairs(limit=150)
     for s_sym in open_symbols_before_scan:
         if s_sym not in pairs:
             pairs.append(s_sym)
 
     print("=" * 95)
-    print(" 🎯 BINANCE HYBRID SMC ENGINE (TIER 1: DAILY SETUPS + TIER 2: SNIPER EXTREMES)")
+    print(" 🎯 BINANCE INSTITUTIONAL SMC 2.0 ENGINE (4H MTF + FVG + LIQUIDITY SWEEP + ATR STOPS)")
     print(f" Timestamp: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} (Local)")
-    print(f" Total Symbols to Scan: {len(pairs)} | Active Open Monitored: {len(open_signals_map)}")
+    print(f" Active Session: {session_info['badge']} ({session_info['desc']})")
+    print(f" Circuit Breaker: {'🛑 TRIPPED (Max Losses Reached)' if circuit_breaker.get('is_tripped') else '🟢 ACTIVE SHIELD (Safe)'} [Today Losses: {circuit_breaker.get('losses_today', 0)}/{MAX_DAILY_LOSSES}]")
+    print(f" Portfolio Heat: {len(open_symbols_before_scan)} / {MAX_ACTIVE_POSITIONS} Max Positions")
+    print(f" Total Symbols to Scan: {len(pairs)} | Active Monitored: {len(open_signals_map)}")
     print(f" 🌐 BTC Macro Sentiment: {btc_sentiment['status']} ({btc_sentiment['reason']})")
     if not btc_sentiment['allow_longs']:
         print("    ⚠️  [BTC DUMP SHIELD ACTIVE] Altcoin BUY / LONG signals are strictly BLOCKED.")
@@ -1025,20 +1455,20 @@ def scan_all_pairs():
 
     results = []
     with ThreadPoolExecutor(max_workers=12) as executor:
-        futures = {executor.submit(analyze_symbol, p, open_signals_map.get(p), btc_sentiment): p for p in pairs}
+        futures = {executor.submit(analyze_symbol, p, open_signals_map.get(p), btc_sentiment, session_info): p for p in pairs}
         for future in futures:
             res = future.result()
             if res:
                 results.append(res)
 
     if len(results) == 0:
-        print("[!] Warning: 0 pairs could be fetched (network/endpoint issue). Preserving previous data!")
+        print("[!] Warning: 0 pairs fetched. Preserving previous data!")
         return [], []
 
     actionable = [r for r in results if r["signal"] in ["BUY / LONG", "SELL / SHORT"]]
     watchlist = [r for r in results if r["signal"] == "WATCHLIST"]
 
-    # 3. Record any brand new signals into history
+    # 5. Record brand new signals respecting Portfolio Heat & Circuit Breaker
     history = record_new_signals_to_history(actionable, history_data, open_symbols_before_scan)
 
     print("-" * 95)
@@ -1048,26 +1478,29 @@ def scan_all_pairs():
     for idx, a in enumerate(actionable, 1):
         print(f"\n[{idx}] 🪙 {a['symbol']}  |  {a['signal']}  |  {a['tier_badge']}")
         print(f"    ├─ Setup            : {a['setup']}")
-        print(f"    ├─ Live Current Price: ${a['current_price']}")
-        print(f"    ├─ Entry Price      : ${a['entry']}")
-        print(f"    ├─ Safe SL (Buffer) : ${a['stop_loss']} (-{a['risk_pct']})")
-        print(f"    ├─ Take Profit (TP) : ${a['take_profit_1_3']} (+{a['reward_pct']}) [1:3 R:R TARGET]")
-        print(f"    ├─ Daily Line S&R   : Sup: ${a['daily_support']} | Res: ${a['daily_resistance']}")
-        print(f"    ├─ 1H Order Block   : {a['order_block_1h']}")
-        print(f"    ├─ Trend (20/50)    : {a['ema_status']} | Daily RSI: {a['rsi_daily']}")
+        print(f"    ├─ 4H MTF Bias      : {a['mtf_status']} | Active Session: {a['session_name']}")
+        print(f"    ├─ Live Price       : ${a['current_price']} (Entry: ${a['entry']})")
+        print(f"    ├─ Dynamic SL (ATR) : ${a['stop_loss']} (-{a['risk_pct']})")
+        print(f"    ├─ Trailing Stop    : ${a.get('trailing_sl_str', a['stop_loss'])}")
+        print(f"    ├─ TP Targets       : TP1: ${a['tp_1']} (50%) | TP2: ${a['tp_2']} (25%) | TP3: ${a['take_profit_1_3']} (Full 1:3)")
+        print(f"    ├─ FVG Confluence   : {a['fvg_str']}")
+        print(f"    ├─ Liquidity Sweep  : {a['sweep_str']}")
         print(f"    └─ Key Confirmations:")
         for r in a['reasons']:
             print(f"       • {r}")
 
-    # Write output to json and html (dashboard.html for XAMPP, index.html for GitHub Pages)
+    # Write output to json and html
     json_path = os.path.join(SCRIPT_DIR, "latest_signals.json")
     html_path = os.path.join(SCRIPT_DIR, "dashboard.html")
     index_path = os.path.join(SCRIPT_DIR, "index.html")
     
     payload = {
         "updated_at": datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-        "filter": "Hybrid SMC: Tier 1 Daily Setups + Tier 2 Sniper Extremes (1:3 R:R)",
+        "filter": "Institutional SMC 2.0: 4H MTF + FVG + Liquidity Sweep + ATR Stops (1:3 R:R)",
+        "session": session_info,
+        "circuit_breaker": history.get("circuit_breaker", {}),
         "btc_sentiment": btc_sentiment,
+        "portfolio_heat": f"{len(open_symbols_before_scan)} / {MAX_ACTIVE_POSITIONS} Max",
         "active_count": len(actionable),
         "active_signals": actionable,
         "all_monitored": results,
@@ -1089,12 +1522,19 @@ def generate_html_dashboard(data, output_path):
     data_json_str = json.dumps(data, indent=2)
     history = data.get("history", {})
     win_rate = history.get("win_rate_pct", 0.0)
-    total_signals = history.get("total_signals", 0)
     wins = history.get("wins", 0)
     losses = history.get("losses", 0)
     net_r = history.get("net_pnl_r", 0.0)
     btc_sentiment = data.get("btc_sentiment", {})
     btc_status = btc_sentiment.get("status", "BULLISH 🟢")
+    session_info = data.get("session", {})
+    session_badge = session_info.get("badge", "🌐 GLOBAL MARKET")
+    circuit_breaker = data.get("circuit_breaker", {})
+    cb_tripped = circuit_breaker.get("is_tripped", False)
+    cb_losses = circuit_breaker.get("losses_today", 0)
+    heat_str = data.get("portfolio_heat", f"0 / {MAX_ACTIVE_POSITIONS} Max")
+
+    cb_html = f'<span class="badge bg-danger text-white"><i class="fa-solid fa-hand me-1"></i>🛑 CIRCUIT BREAKER TRIPPED ({cb_losses}/2 Losses)</span>' if cb_tripped else f'<span class="badge bg-success bg-opacity-25 text-success border border-success"><i class="fa-solid fa-shield-halved me-1"></i>DRAWDOWN SHIELD ACTIVE ({cb_losses}/2)</span>'
 
     html_content = f"""<!DOCTYPE html>
 <html lang="en">
@@ -1104,7 +1544,7 @@ def generate_html_dashboard(data, output_path):
     <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
     <meta http-equiv="Pragma" content="no-cache">
     <meta http-equiv="Expires" content="0">
-    <title>Binance SMC Pro - Live Price & Signal Scanner</title>
+    <title>Binance SMC Pro 2.0 - Institutional Live Scanner</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
     <style>
@@ -1199,26 +1639,11 @@ def generate_html_dashboard(data, output_path):
             border-radius: 6px;
             border: 1px solid rgba(246, 70, 93, 0.3);
         }}
-        .badge-rr {{
-            background-color: rgba(240, 185, 11, 0.15);
-            color: var(--accent-yellow);
-            font-weight: 700;
-            padding: 4px 10px;
-            border-radius: 6px;
-            border: 1px solid rgba(240, 185, 11, 0.3);
-        }}
         .price-hero {{
             background: linear-gradient(145deg, #0d121a, #131a24);
             border: 1px solid #232c3a;
             border-radius: 10px;
             padding: 12px 16px;
-            margin-bottom: 12px;
-        }}
-        .price-box {{
-            background-color: #0d1117;
-            border: 1px solid #1f2733;
-            border-radius: 8px;
-            padding: 12px;
             margin-bottom: 12px;
         }}
         .metric-title {{
@@ -1228,22 +1653,10 @@ def generate_html_dashboard(data, output_path):
             color: #848e9c;
             margin-bottom: 4px;
         }}
-        .metric-val {{
-            font-size: 1.1rem;
-            font-weight: 700;
-        }}
         .val-green {{ color: var(--accent-green); }}
         .val-red {{ color: var(--accent-red); }}
         .val-yellow {{ color: var(--accent-yellow); }}
         .val-cyan {{ color: var(--accent-cyan); }}
-        .ob-box {{
-            background: rgba(155, 81, 224, 0.08);
-            border: 1px dashed rgba(155, 81, 224, 0.4);
-            border-radius: 8px;
-            padding: 8px 12px;
-            margin-bottom: 12px;
-            font-size: 0.8rem;
-        }}
         .live-pulse {{
             display: inline-block;
             width: 8px;
@@ -1297,6 +1710,12 @@ def generate_html_dashboard(data, output_path):
             border-left: 4px solid #0ecb81;
             transition: border-color 0.3s ease;
         }}
+        .confluence-chip {{
+            font-size: 0.72rem;
+            padding: 3px 8px;
+            border-radius: 4px;
+            font-weight: 600;
+        }}
     </style>
 </head>
 <body>
@@ -1304,18 +1723,22 @@ def generate_html_dashboard(data, output_path):
     <nav class="navbar navbar-dark px-4 py-3 mb-4">
         <div class="container-fluid">
             <span class="navbar-brand mb-0 h1 d-flex align-items-center">
-                <i class="fa-solid fa-bolt text-warning me-2 fs-4"></i>
+                <i class="fa-solid fa-shield-halved text-warning me-2 fs-3"></i>
                 <div>
-                    <span class="fw-bold">Binance Live SMC Trading Scanner</span>
-                    <span class="badge bg-warning text-dark ms-2" style="font-size: 0.7rem;">Live Price & Distance Tracker</span>
+                    <span class="fw-bold">Binance SMC Pro 2.0</span>
+                    <span class="badge bg-warning text-dark ms-2" style="font-size: 0.7rem;">Institutional Quantitative Engine</span>
                 </div>
             </span>
-            <div class="d-flex align-items-center gap-3">
+            <div class="d-flex align-items-center flex-wrap gap-2">
                 <span class="badge bg-dark border border-secondary text-light">
-                    <i class="fa-brands fa-bitcoin text-warning me-1"></i> BTC Macro: <strong class="ms-1">{btc_status}</strong>
+                    <i class="fa-regular fa-clock text-warning me-1"></i> Session: <strong>{session_badge}</strong>
                 </span>
                 <span class="badge bg-dark border border-secondary text-light">
-                    <span class="live-pulse"></span>Live Price Stream: Active
+                    <i class="fa-solid fa-fire text-danger me-1"></i> Heat: <strong>{heat_str}</strong>
+                </span>
+                {cb_html}
+                <span class="badge bg-dark border border-secondary text-light">
+                    <i class="fa-brands fa-bitcoin text-warning me-1"></i> BTC: <strong class="ms-1">{btc_status}</strong>
                 </span>
                 <span id="update-time" class="text-muted small">Updated: <span class="text-warning">{data.get('updated_at')}</span></span>
             </div>
@@ -1324,34 +1747,34 @@ def generate_html_dashboard(data, output_path):
 
     <div class="container-fluid px-4">
         
-        <!-- Live Win Rate Bar -->
+        <!-- Live Performance Bar -->
         <div class="row g-3 mb-4">
             <div class="col-12 col-md-3">
                 <div class="stat-card">
-                    <div class="stat-title"><i class="fa-solid fa-trophy text-warning me-1"></i> Winning Percentage</div>
+                    <div class="stat-title"><i class="fa-solid fa-trophy text-warning me-1"></i> Closed Win Rate</div>
                     <div class="stat-value val-yellow">{win_rate}%</div>
-                    <small class="text-muted">Target 1:3 R:R (Break-even is 25%)</small>
+                    <small class="text-muted">Break-even at 1:3 R:R is 25.0%</small>
                 </div>
             </div>
             <div class="col-12 col-md-3">
                 <div class="stat-card">
-                    <div class="stat-title"><i class="fa-solid fa-check-double text-success me-1"></i> Wins (1:3 TP Hit)</div>
+                    <div class="stat-title"><i class="fa-solid fa-check-double text-success me-1"></i> Total Wins</div>
                     <div class="stat-value val-green">{wins}</div>
-                    <small class="text-muted">Each Win = +3x Risk Profit</small>
+                    <small class="text-muted">Scaled Exits (+3.0R TP3 & Locked +1.5R)</small>
                 </div>
             </div>
             <div class="col-12 col-md-3">
                 <div class="stat-card">
                     <div class="stat-title"><i class="fa-solid fa-xmark text-danger me-1"></i> Losses (SL Hit)</div>
                     <div class="stat-value val-red">{losses}</div>
-                    <small class="text-muted">Each Loss = -1x Risk</small>
+                    <small class="text-muted">Controlled Structural Risk (-1.0R)</small>
                 </div>
             </div>
             <div class="col-12 col-md-3">
                 <div class="stat-card">
                     <div class="stat-title"><i class="fa-solid fa-scale-balanced text-info me-1"></i> Net Return (R)</div>
                     <div class="stat-value text-info">+{net_r} R</div>
-                    <small class="text-muted">Total Multiplier Return</small>
+                    <small class="text-muted">Cumulative Multiple Gain</small>
                 </div>
             </div>
         </div>
@@ -1360,22 +1783,22 @@ def generate_html_dashboard(data, output_path):
         <div class="mb-4">
             <div class="d-flex align-items-center justify-content-between mb-2">
                 <h4 class="fw-bold mb-0 text-white">
-                    <i class="fa-solid fa-bolt text-warning me-2"></i>Live Trading Signals (1:3 R:R Multi-TP)
+                    <i class="fa-solid fa-bolt text-warning me-2"></i>Institutional SMC Setups (4H MTF + FVG + ATR Stops)
                     <span class="badge bg-warning text-dark ms-2" id="active-total-badge">{data.get('active_count', 0)}</span>
                 </h4>
-                <small class="text-muted">Live prices auto-updating from Binance API every 4s</small>
+                <small class="text-muted">Live 4s ticker streaming directly from Binance API</small>
             </div>
 
-            <!-- Trade Category Filter Tabs -->
+            <!-- Category Filter Tabs -->
             <div class="d-flex flex-wrap gap-2 mb-3 mt-3">
                 <button class="btn btn-sm btn-outline-light active filter-tab-btn" id="btn-filter-all" onclick="filterSignals('ALL')">
-                    <i class="fa-solid fa-layer-group me-1"></i> All Signals (<span id="cnt-all">{data.get('active_count', 0)}</span>)
+                    <i class="fa-solid fa-layer-group me-1"></i> All Setups (<span id="cnt-all">{data.get('active_count', 0)}</span>)
                 </button>
                 <button class="btn btn-sm btn-outline-success filter-tab-btn" id="btn-filter-ready" onclick="filterSignals('READY')">
-                    <i class="fa-solid fa-circle-check me-1"></i> 🟢 Ganna Puluwan (Ready Now) (<span id="cnt-ready">0</span>)
+                    <i class="fa-solid fa-circle-check me-1"></i> 🟢 Ganna Puluwan (Ready) (<span id="cnt-ready">0</span>)
                 </button>
                 <button class="btn btn-sm btn-outline-warning filter-tab-btn" id="btn-filter-limit" onclick="filterSignals('LIMIT')">
-                    <i class="fa-solid fa-clock me-1"></i> 🟡 Pending Limit Orders (<span id="cnt-limit">0</span>)
+                    <i class="fa-solid fa-clock me-1"></i> 🟡 Pending Limit Retest (<span id="cnt-limit">0</span>)
                 </button>
                 <button class="btn btn-sm btn-outline-info filter-tab-btn" id="btn-filter-running" onclick="filterSignals('RUNNING')">
                     <i class="fa-solid fa-rocket me-1"></i> 🚀 Running In Profit (<span id="cnt-running">0</span>)
@@ -1395,20 +1818,20 @@ def generate_html_dashboard(data, output_path):
         <!-- Section 2: Watchlist -->
         <div class="mt-5">
             <h4 class="fw-bold mb-3 text-white">
-                <i class="fa-solid fa-binoculars text-info me-2"></i>SMC Structure Tracker & Watchlist
+                <i class="fa-solid fa-binoculars text-info me-2"></i>Multi-Timeframe Structure Watchlist (150 Pairs)
             </h4>
             <div class="table-responsive table-dark-custom">
                 <table class="table mb-0">
                     <thead>
                         <tr>
                             <th>Pair</th>
-                            <th>Current Live Price</th>
-                            <th>Daily RSI</th>
-                            <th>Tier / Protection</th>
+                            <th>Current Price</th>
+                            <th>4H Bias</th>
+                            <th>1H FVG / Sweep</th>
                             <th>1H Order Block</th>
-                            <th>Daily S&R</th>
-                            <th>Signal</th>
-                            <th>Action</th>
+                            <th>Daily S&R Base</th>
+                            <th>RSI (1D/1H)</th>
+                            <th>Status</th>
                         </tr>
                     </thead>
                     <tbody id="watchlist-body">
@@ -1417,13 +1840,13 @@ def generate_html_dashboard(data, output_path):
             </div>
         </div>
 
-        <!-- Section 3: Signal Performance & Expired Trades -->
+        <!-- Section 3: Closed Trade Outcomes -->
         <div class="mt-5 mb-5" id="history-section">
             <div class="d-flex align-items-center justify-content-between mb-3">
                 <h4 class="fw-bold mb-0 text-white">
-                    <i class="fa-solid fa-clock-rotate-left text-warning me-2"></i>Signal History & Trade Outcomes (Active & Expired)
+                    <i class="fa-solid fa-clock-rotate-left text-warning me-2"></i>Trade Lifecycle Ledger & History
                 </h4>
-                <span class="badge bg-dark border border-secondary text-muted">Auto-Tracks 1:3 TP & SL Outcomes</span>
+                <span class="badge bg-dark border border-secondary text-muted">Multi-Stage Trailing Break-Even Ledger</span>
             </div>
             <div class="table-responsive table-dark-custom">
                 <table class="table mb-0">
@@ -1434,7 +1857,7 @@ def generate_html_dashboard(data, output_path):
                             <th>Type</th>
                             <th>Setup</th>
                             <th>Entry</th>
-                            <th>Safe SL</th>
+                            <th>Trailing / Safe SL</th>
                             <th>TP1 (1:1.5)</th>
                             <th>TP3 (1:3.0)</th>
                             <th>Status / Outcome</th>
@@ -1461,9 +1884,9 @@ def generate_html_dashboard(data, output_path):
                 container.innerHTML = `
                     <div class="col-12">
                         <div class="signal-card text-center py-5">
-                            <i class="fa-solid fa-clock-rotate-left fs-1 text-muted mb-3"></i>
-                            <h5 class="text-white">No active pairs at exact entry trigger right now</h5>
-                            <p class="text-muted small">All monitored coins are currently mid-range. See the Watchlist below for setups forming near Line S&R levels.</p>
+                            <i class="fa-solid fa-shield-halved fs-1 text-muted mb-3"></i>
+                            <h5 class="text-white">No active pairs meeting strict 4H+1H SMC confluence right now</h5>
+                            <p class="text-muted small">High-probability filter active: Requires 4H MTF alignment, 1H FVG/OB retest, and ATR structural buffer. See Watchlist below.</p>
                         </div>
                     </div>
                 `;
@@ -1482,11 +1905,10 @@ def generate_html_dashboard(data, output_path):
                                     <i class="fa-solid fa-clock me-1"></i>RECOMMENDED SMC RETEST (LIMIT)
                                 </span>
                                 <span class="badge bg-dark border border-warning text-warning fw-bold" style="font-size: 0.75rem;">
-                                    <i class="fa-solid fa-arrow-turn-down me-1"></i>Retest Pullback: +${{sig.limit_setup.dist_pct}}
+                                    <i class="fa-solid fa-arrow-turn-down me-1"></i>Pullback: +${{sig.limit_setup.dist_pct}}
                                 </span>
                             </div>
 
-                            <!-- Big Bold Limit Entry Price Box -->
                             <div class="text-center py-2 px-3 mb-2 rounded" style="background: #0d1117; border: 1px solid rgba(240, 185, 11, 0.4);">
                                 <div class="text-warning text-uppercase fw-bold" style="font-size: 0.75rem; letter-spacing: 0.8px;">
                                     <i class="fa-solid fa-bullseye text-warning me-1"></i>BINANCE ${{limitOrderType.toUpperCase()}} ENTRY:
@@ -1499,11 +1921,10 @@ def generate_html_dashboard(data, output_path):
                                 </div>
                             </div>
 
-                            <!-- Limit SL, TP1, TP3 Box -->
                             <div class="row g-2 text-center">
                                 <div class="col-4">
                                     <div class="p-1 rounded" style="background: #161b22; border: 1px solid rgba(246, 70, 93, 0.3);">
-                                        <div class="text-white-50 fw-bold" style="font-size: 0.68rem;">LIMIT SL</div>
+                                        <div class="text-white-50 fw-bold" style="font-size: 0.68rem;">LIMIT SL (ATR)</div>
                                         <div class="val-red fw-bold" style="font-size: 0.88rem;">$${{sig.limit_setup.limit_sl}}</div>
                                         <div class="text-danger" style="font-size: 0.65rem;">-${{sig.limit_setup.risk_pct}}</div>
                                     </div>
@@ -1543,7 +1964,7 @@ def generate_html_dashboard(data, output_path):
                         initialCat = "STOPPED";
                         initialBorder = "#f6465d";
                         initialBadge = '<span class="badge bg-danger text-white py-1 px-2"><i class="fa-solid fa-triangle-exclamation me-1"></i>🔴 SL HIT / INVALID</span>';
-                        initialDesc = `<span class="text-danger fw-bold">${{sig.action_label || 'Stop Loss Breached (Do Not Enter)'}}</span>`;
+                        initialDesc = `<span class="text-danger fw-bold">${{sig.action_label || 'Stop Loss Breached'}}</span>`;
                     }} else if (sig.action_status === 'RUNNING') {{
                         initialCat = "RUNNING";
                         initialBorder = "#0dcaf0";
@@ -1557,18 +1978,8 @@ def generate_html_dashboard(data, output_path):
                     }}
                     col.setAttribute('data-category', initialCat);
 
-                    const marketPlanHeader = sig.limit_setup ? `
-                        <div class="d-flex align-items-center gap-2 mb-2 mt-1">
-                            <small class="text-muted fw-bold text-uppercase" style="font-size: 0.68rem; letter-spacing: 0.5px;">
-                                — OR — Instant Market Entry Plan
-                            </small>
-                            <div class="flex-grow-1 border-top border-secondary opacity-25"></div>
-                        </div>
-                    ` : '';
-
                     col.innerHTML = `
                         <div class="signal-card ${{cardClass}}">
-                            <!-- Action Status Banner -->
                             <div class="d-flex justify-content-between align-items-center p-2 mb-2 action-status-bar" id="action-bar-${{sig.symbol}}" style="border-left-color: ${{initialBorder}};">
                                 <div id="action-badge-${{sig.symbol}}">${{initialBadge}}</div>
                                 <div id="action-desc-${{sig.symbol}}"><small>${{initialDesc}}</small></div>
@@ -1585,14 +1996,26 @@ def generate_html_dashboard(data, output_path):
                                 </div>
                             </div>
 
-                            <!-- Live Price vs Entry Hero Banner -->
+                            <!-- Institutional Confluence Tags -->
+                            <div class="d-flex flex-wrap gap-1 mb-2">
+                                <span class="badge bg-dark border border-secondary text-info confluence-chip">
+                                    <i class="fa-solid fa-cubes me-1"></i>4H: ${{sig.mtf_status || 'Aligned'}}
+                                </span>
+                                <span class="badge bg-dark border border-secondary text-warning confluence-chip">
+                                    <i class="fa-regular fa-clock me-1"></i>${{sig.session_name || 'Global'}}
+                                </span>
+                                ${{sig.fvg_str && sig.fvg_str !== 'None' ? `<span class="badge bg-dark border border-primary text-primary confluence-chip"><i class="fa-solid fa-droplet me-1"></i>FVG</span>` : ''}}
+                                ${{sig.sweep_str && sig.sweep_str !== 'None' ? `<span class="badge bg-dark border border-success text-success confluence-chip"><i class="fa-solid fa-bolt me-1"></i>Sweep</span>` : ''}}
+                            </div>
+
+                            <!-- Live Price vs Entry Hero -->
                             <div class="price-hero d-flex justify-content-between align-items-center">
                                 <div>
                                     <div class="metric-title"><span class="live-pulse"></span>Live Price</div>
                                     <div class="h4 mb-0 fw-bold text-white live-price-val" id="live-${{sig.symbol}}">$${{sig.current_price}}</div>
                                 </div>
                                 <div class="text-end border-start border-secondary ps-3">
-                                    <div class="metric-title">${{sig.limit_setup ? 'Market (Now)' : (sig.action_status === 'RUNNING' || sig.action_status === 'STOPPED' || sig.action_status === 'WARNING' ? 'Signal Entry' : 'Market Entry')}}</div>
+                                    <div class="metric-title">${{sig.limit_setup ? 'Market (Now)' : 'Signal Entry'}}</div>
                                     <div class="h5 mb-0 fw-bold val-yellow">$${{sig.entry}}</div>
                                     <small class="fw-bold live-diff-val" id="diff-${{sig.symbol}}">0.00%</small>
                                 </div>
@@ -1600,156 +2023,99 @@ def generate_html_dashboard(data, output_path):
 
                             ${{limitBlock}}
 
-                            ${{marketPlanHeader}}
-
-                            <!-- SL, TP, R:R Box -->
-                            <div class="row g-2 price-box">
-                                <div class="col-6 text-center">
-                                    <div class="metric-title">Safe Structural SL</div>
-                                    <div class="metric-val val-red">$${{sig.stop_loss}}</div>
-                                    <small class="val-red">${{sig.risk_pct}}</small>
-                                </div>
-                                <div class="col-6 text-center border-start border-secondary">
-                                    <div class="metric-title">Take Profit (1:3)</div>
-                                    <div class="metric-val val-green">$${{sig.take_profit_1_3}}</div>
-                                    <small class="val-green">+${{sig.reward_pct}}</small>
-                                </div>
-                            </div>
-
-                            <!-- Multi-TP Scaled Targets -->
-                            <div class="p-2 mb-2 rounded border border-secondary" style="background-color: #12161f !important;">
-                                <div class="d-flex justify-content-between align-items-center mb-1 pb-1 border-bottom border-secondary">
-                                    <small class="text-white fw-bold"><i class="fa-solid fa-layer-group text-warning me-1"></i>Multi-TP Scaled Targets</small>
-                                    <span class="badge bg-secondary" style="font-size: 0.65rem;">Scale Out & Secure</span>
-                                </div>
-                                <div class="row g-1 text-center small">
-                                    <div class="col-4 border-end border-secondary">
-                                        <div class="text-muted" style="font-size: 0.7rem;">TP 1 (1:1.5)</div>
-                                        <div class="fw-bold val-green" style="font-size: 0.85rem;">$${{sig.tp_1 || '-'}}</div>
-                                        <div class="text-white-50" style="font-size: 0.65rem;">50% + SL to BE</div>
+                            <!-- Standard Pricing Row -->
+                            <div class="row g-2 mb-2 text-center">
+                                <div class="col-4">
+                                    <div class="p-2 rounded bg-dark border border-secondary border-opacity-25">
+                                        <div class="metric-title">Safe SL (ATR)</div>
+                                        <div class="val-red fw-bold">$${{sig.stop_loss}}</div>
+                                        <small class="text-danger">-${{sig.risk_pct}}</small>
                                     </div>
-                                    <div class="col-4 border-end border-secondary">
-                                        <div class="text-muted" style="font-size: 0.7rem;">TP 2 (1:2.0)</div>
-                                        <div class="fw-bold val-green" style="font-size: 0.85rem;">$${{sig.tp_2 || '-'}}</div>
-                                        <div class="text-white-50" style="font-size: 0.65rem;">Take 25%</div>
+                                </div>
+                                <div class="col-4">
+                                    <div class="p-2 rounded bg-dark border border-secondary border-opacity-25">
+                                        <div class="metric-title">Trailing SL</div>
+                                        <div class="text-warning fw-bold" id="trail-${{sig.symbol}}">$${{sig.trailing_sl_str || sig.stop_loss}}</div>
+                                        <small class="text-muted">Dynamic</small>
                                     </div>
-                                    <div class="col-4">
-                                        <div class="text-muted" style="font-size: 0.7rem;">TP 3 (1:3.0)</div>
-                                        <div class="fw-bold val-green" style="font-size: 0.85rem;">$${{sig.take_profit_1_3}}</div>
-                                        <div class="text-white-50" style="font-size: 0.65rem;">Final Runner</div>
+                                </div>
+                                <div class="col-4">
+                                    <div class="p-2 rounded bg-dark border border-secondary border-opacity-25">
+                                        <div class="metric-title">1:3 Full Target</div>
+                                        <div class="val-green fw-bold">$${{sig.take_profit_1_3}}</div>
+                                        <small class="text-success">+${{sig.reward_pct}}</small>
                                     </div>
                                 </div>
                             </div>
 
-                            <div class="ob-box mb-2">
-                                <small class="text-white-50"><i class="fa-solid fa-cube me-1"></i>1H Order Block:</small>
-                                <div class="text-white fw-bold">${{sig.order_block_1h || 'None'}}</div>
+                            <!-- Confirmations List -->
+                            <div class="small text-muted border-top border-secondary border-opacity-25 pt-2 mt-2">
+                                <div class="fw-bold text-light mb-1" style="font-size: 0.72rem;">CONFIRMATIONS:</div>
+                                ${{sig.reasons.map(r => `<div class="text-truncate" style="font-size: 0.72rem;">• ${{r}}</div>`).slice(0, 3).join('')}}
                             </div>
 
-                            <div class="d-flex flex-wrap gap-2 mb-2">
-                                <span class="badge bg-dark border border-secondary text-light">Daily RSI: ${{sig.rsi_daily}}</span>
-                                <span class="badge bg-dark border border-secondary text-light">1H RSI: ${{sig.rsi_1h}}</span>
-                                <span class="badge-rr">R:R 1:3</span>
-                            </div>
-
-                            <div class="mt-3 pt-2 border-top border-secondary">
-                                <small class="text-muted d-block mb-1">Key Factors:</small>
-                                <ul class="small text-light ps-3 mb-3">
-                                    ${{(sig.reasons || []).map(r => `<li>${{r}}</li>`).join('')}}
-                                </ul>
-                                <a href="https://www.binance.com/en/trade/${{sig.symbol}}" target="_blank" class="btn btn-outline-warning btn-sm w-100 fw-bold">
-                                    <i class="fa-solid fa-arrow-up-right-from-square me-1"></i> Trade on Binance
+                            <!-- Action Button -->
+                            <div class="mt-3">
+                                <a href="https://www.binance.com/en/trade/${{sig.symbol}}" target="_blank" class="btn btn-sm btn-outline-warning w-100 fw-bold">
+                                    <i class="fa-solid fa-arrow-up-right-from-square me-1"></i>Trade on Binance
                                 </a>
                             </div>
                         </div>
                     `;
                     container.appendChild(col);
                 }});
-
-                let initReady = 0, initLimit = 0, initRunning = 0;
-                active.forEach(sig => {{
-                    if (sig.limit_setup) initLimit++;
-                    else if (sig.action_status === 'RUNNING') initRunning++;
-                    else initReady++;
-                }});
-                const elAll = document.getElementById('cnt-all');
-                const elReady = document.getElementById('cnt-ready');
-                const elLimit = document.getElementById('cnt-limit');
-                const elRunning = document.getElementById('cnt-running');
-                if (elAll) elAll.innerText = active.length;
-                if (elReady) elReady.innerText = initReady;
-                if (elLimit) elLimit.innerText = initLimit;
-                if (elRunning) elRunning.innerText = initRunning;
             }}
 
-            // Watchlist
-            const tbody = document.getElementById('watchlist-body');
-            tbody.innerHTML = "";
-            const all = data.all_monitored || [];
-            all.forEach(item => {{
-                const isBuy = item.signal.includes("BUY") || item.signal.includes("LONG");
-                const isSell = item.signal.includes("SELL") || item.signal.includes("SHORT");
-                const sigBadge = isBuy ? '<span class="badge badge-long">LONG</span>' : (isSell ? '<span class="badge badge-short">SHORT</span>' : '<span class="badge bg-secondary">WATCHLIST</span>');
+            // Render Watchlist
+            const watchlistBody = document.getElementById('watchlist-body');
+            if (watchlistBody) {{
+                watchlistBody.innerHTML = "";
+                const monitored = data.all_monitored || [];
+                const watchOnly = monitored.filter(m => m.signal === "WATCHLIST");
+                watchOnly.forEach(w => {{
+                    const tr = document.createElement('tr');
+                    tr.innerHTML = `
+                        <td class="fw-bold text-white">${{w.symbol}}</td>
+                        <td id="watch-${{w.symbol}}">$${{w.current_price}}</td>
+                        <td><span class="badge bg-dark border border-secondary text-info">${{w.mtf_status || 'NEUTRAL'}}</span></td>
+                        <td><small class="text-muted">${{w.fvg_str !== 'None' ? w.fvg_str : (w.sweep_str !== 'None' ? w.sweep_str : '-')}}</small></td>
+                        <td><small class="text-muted">${{w.order_block_1h || '-'}}</small></td>
+                        <td><small>${{w.daily_support}} / ${{w.daily_resistance}}</small></td>
+                        <td><small>${{w.rsi_daily}} / ${{w.rsi_1h}}</small></td>
+                        <td><span class="badge bg-secondary bg-opacity-25 text-white-50">${{w.tier_badge}}</span></td>
+                    `;
+                    watchlistBody.appendChild(tr);
+                }});
+            }}
 
-                const tr = document.createElement('tr');
-                tr.innerHTML = `
-                    <td class="fw-bold text-white">${{item.symbol}}</td>
-                    <td class="text-white fw-bold" id="watch-${{item.symbol}}">$${{item.entry}}</td>
-                    <td>${{item.rsi_daily}}</td>
-                    <td><span class="badge bg-dark border border-secondary">${{item.tier_badge}}</span></td>
-                    <td><small class="text-muted">${{item.order_block_1h || '-'}}</small></td>
-                    <td><small class="text-success">$${{item.daily_support}}</small> / <small class="text-danger">$${{item.daily_resistance}}</small></td>
-                    <td>${{sigBadge}}</td>
-                    <td>
-                        <a href="https://www.binance.com/en/trade/${{item.symbol}}" target="_blank" class="btn btn-sm btn-outline-light py-0 px-2">
-                            Trade
-                        </a>
-                    </td>
-                `;
-                tbody.appendChild(tr);
-            }});
-
-            // Render History & Expired Signals
+            // Render History
             const histBody = document.getElementById('history-body');
             if (histBody) {{
                 histBody.innerHTML = "";
-                const histList = (data.history && data.history.signals) ? data.history.signals : [];
-                if (histList.length === 0) {{
-                    histBody.innerHTML = '<tr><td colspan="10" class="text-center text-muted py-3">No trade signals recorded yet.</td></tr>';
-                }} else {{
-                    histList.slice().reverse().forEach(s => {{
-                        let stBadge = '<span class="badge bg-warning text-dark"><i class="fa-solid fa-hourglass-half me-1"></i>OPEN / ACTIVE</span>';
-                        let rText = '<span class="text-muted">Pending</span>';
-                        if (s.status.includes("WIN (1:3") || s.status.includes("WIN (1:3 TP Hit)")) {{
-                            stBadge = '<span class="badge bg-success"><i class="fa-solid fa-check-double me-1"></i>WIN (1:3 TP3 Hit)</span>';
-                            rText = '<span class="val-green fw-bold">+3.0 R</span>';
-                        }} else if (s.status.includes("TP1 Hit") || s.status.includes("BE")) {{
-                            stBadge = '<span class="badge bg-info text-dark"><i class="fa-solid fa-shield-halved me-1"></i>WIN (TP1 Hit / BE)</span>';
-                            rText = '<span class="val-green fw-bold">+0.75 R</span>';
-                        }} else if (s.status.includes("LOSS")) {{
-                            stBadge = '<span class="badge bg-danger"><i class="fa-solid fa-xmark me-1"></i>EXPIRED (SL Hit)</span>';
-                            rText = '<span class="val-red fw-bold">-1.0 R</span>';
-                        }}
+                const signals = (data.history && data.history.signals) ? data.history.signals : [];
+                signals.slice().reverse().forEach(s => {{
+                    const tr = document.createElement('tr');
+                    const isWin = s.status.includes("WIN");
+                    const isLoss = s.status.includes("LOSS");
+                    const isPending = s.status.includes("PENDING");
+                    const badgeClass = isWin ? "bg-success" : (isLoss ? "bg-danger" : (isPending ? "bg-warning text-dark" : "bg-info text-dark"));
+                    const pnlColor = isWin ? "text-success" : (isLoss ? "text-danger" : "text-muted");
+                    const pnlSign = (s.outcome_pnl > 0) ? "+" : "";
 
-                        const isLong = s.type.includes("BUY") || s.type.includes("LONG");
-                        const typeBadge = isLong ? '<span class="badge badge-long">LONG</span>' : '<span class="badge badge-short">SHORT</span>';
-
-                        const tr = document.createElement('tr');
-                        tr.innerHTML = `
-                            <td class="text-muted small">${{s.date || '-'}}</td>
-                            <td class="fw-bold text-white">${{s.symbol}}</td>
-                            <td>${{typeBadge}}</td>
-                            <td><small class="text-muted">${{s.setup || '-'}}</small></td>
-                            <td class="text-white fw-bold">$${{s.entry_str || s.entry}}</td>
-                            <td class="val-red">$${{s.sl_str || s.sl}}</td>
-                            <td class="val-green">$${{s.tp1_str || (s.tp1 ? s.tp1.toFixed(4) : '-')}}</td>
-                            <td class="val-green">$${{s.tp_str || s.tp}}</td>
-                            <td>${{stBadge}}</td>
-                            <td>${{rText}}</td>
-                        `;
-                        histBody.appendChild(tr);
-                    }});
-                }}
+                    tr.innerHTML = `
+                        <td><small class="text-muted">${{s.date || '-'}}</small></td>
+                        <td class="fw-bold text-white">${{s.symbol}}</td>
+                        <td><span class="badge ${{s.type.includes('BUY') ? 'bg-success bg-opacity-25 text-success' : 'bg-danger bg-opacity-25 text-danger'}}">${{s.type}}</span></td>
+                        <td><small>${{s.setup || '-'}}</small></td>
+                        <td>$${{s.entry_str || s.entry}}</td>
+                        <td class="text-warning">$${{s.trailing_sl_str || s.sl_str || s.sl}}</td>
+                        <td class="text-success">$${{s.tp1_str || s.tp1 || '-'}}</td>
+                        <td class="text-success">$${{s.tp_str || s.tp}}</td>
+                        <td><span class="badge ${{badgeClass}}">${{s.status}}</span></td>
+                        <td class="fw-bold ${{pnlColor}}">${{pnlSign}}${{s.outcome_pnl ? s.outcome_pnl.toFixed(2) : '0.00'}} R</td>
+                    `;
+                    histBody.appendChild(tr);
+                }});
             }}
         }}
 
@@ -1778,7 +2144,7 @@ def generate_html_dashboard(data, output_path):
             }}
         }}
 
-        // Real-Time Live Price Polling from Binance API every 4 seconds!
+        // Live Price Polling from Binance API every 4 seconds
         async function fetchLivePrices() {{
             try {{
                 let resp;
@@ -1806,16 +2172,14 @@ def generate_html_dashboard(data, output_path):
                         const diffEl = document.getElementById(`diff-${{sig.symbol}}`);
                         const watchEl = document.getElementById(`watch-${{sig.symbol}}`);
 
-                        // Format live price
                         let pStr = liveP >= 1000 ? liveP.toLocaleString('en-US', {{minimumFractionDigits: 2, maximumFractionDigits: 2}}) :
                                    (liveP >= 1 ? liveP.toFixed(4) : (liveP >= 0.0001 ? liveP.toFixed(6) : liveP.toFixed(8)));
 
                         if (liveEl) liveEl.innerText = `$${{pStr}}`;
                         if (watchEl) watchEl.innerText = `$${{pStr}}`;
 
-                        // Calculate distance from entry and PnL direction
                         const entry = sig.raw_entry;
-                        const sl = sig.raw_sl;
+                        const sl = sig.trailing_sl || sig.raw_sl;
                         const tp = sig.raw_tp;
                         const isLong = sig.signal.includes("BUY") || sig.signal.includes("LONG");
                         const rawDiffPct = ((liveP - entry) / entry) * 100;
@@ -1852,7 +2216,6 @@ def generate_html_dashboard(data, output_path):
                             diffEl.className = `fw-bold live-diff-val ${{diffColor}}`;
                         }}
 
-                        // Determine live status category
                         let cat = "READY";
                         let barBorder = "#0ecb81";
                         let badgeHtml = "";
@@ -1863,7 +2226,7 @@ def generate_html_dashboard(data, output_path):
                             countStopped++;
                             barBorder = "#f6465d";
                             badgeHtml = '<span class="badge bg-danger text-white py-1 px-2"><i class="fa-solid fa-triangle-exclamation me-1"></i>🔴 SL HIT / INVALID</span>';
-                            descHtml = '<span class="text-danger fw-bold">Stop Loss Breached (Do Not Enter)</span>';
+                            descHtml = '<span class="text-danger fw-bold">Stop Loss Breached</span>';
                         }} else if (sig.limit_setup) {{
                             cat = "LIMIT";
                             countLimit++;
@@ -1913,7 +2276,6 @@ def generate_html_dashboard(data, output_path):
                     }}
                 }});
 
-                // Update counter numbers
                 const elAll = document.getElementById('cnt-all');
                 const elReady = document.getElementById('cnt-ready');
                 const elLimit = document.getElementById('cnt-limit');
@@ -1937,7 +2299,7 @@ def generate_html_dashboard(data, output_path):
             window.scrollTo(0, 0);
             renderUI(EMBEDDED_DATA);
             fetchLivePrices();
-            setInterval(fetchLivePrices, 4000); // Live tick every 4 seconds!
+            setInterval(fetchLivePrices, 4000);
         }});
     </script>
 </body>
