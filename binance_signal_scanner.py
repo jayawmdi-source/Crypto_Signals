@@ -214,7 +214,7 @@ def send_telegram_new_signal(sig):
     send_telegram_message(msg.strip())
 
 def send_telegram_resolution(sig, event_type):
-    sym = sig.get('symbol')
+    sym = sig.get('symbol') if sig else "PORTFOLIO"
     if event_type == "WIN_TP3":
         msg = (
             f"🎉 <b>1:3 FULL TARGET HIT! (WIN +3.0R)</b> 🏆\n"
