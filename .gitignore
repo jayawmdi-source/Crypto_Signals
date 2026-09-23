@@ -1,6 +1,7 @@
 __pycache__/
 *.pyc
 telegram_config.json
+binance_api_config.json
 .env
 mingit/
 mingit.zip

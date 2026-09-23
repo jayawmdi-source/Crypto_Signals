@@ -1,0 +1,8 @@
+{
+  "api_key": "YOUR_BINANCE_FUTURES_API_KEY",
+  "api_secret": "YOUR_BINANCE_FUTURES_API_SECRET",
+  "leverage": 10,
+  "position_size_pct": 10.0,
+  "margin_type": "ISOLATED",
+  "enable_live_trading": false
+}

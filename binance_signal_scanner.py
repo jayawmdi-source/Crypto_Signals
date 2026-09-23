@@ -32,6 +32,12 @@ session.headers.update(HEADERS)
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 HISTORY_FILE = os.path.join(SCRIPT_DIR, "trade_history.json")
 
+try:
+    from binance_futures_trader import BinanceFuturesTrader
+    auto_trader = BinanceFuturesTrader()
+except Exception as _e:
+    auto_trader = None
+
 def send_telegram_message(message_html):
     token = os.environ.get("TELEGRAM_BOT_TOKEN")
     chat_id = os.environ.get("TELEGRAM_CHAT_ID")
@@ -1173,6 +1179,9 @@ def check_and_resolve_open_trades():
                     is_sl_touched = (low <= current_sl) if is_long else (high >= current_sl)
                     
                     if is_sl_touched:
+                        if auto_trader and auto_trader.is_live_enabled():
+                            auto_trader.close_position_market(s["symbol"], is_long, fraction=1.0)
+
                         if s["status"] == "TP2_LOCKED_RUNNING":
                             s["status"] = "WIN (TP2 Trailed / Locked +1.5R)"
                             s["outcome_pnl"] = +1.5
@@ -1203,6 +1212,8 @@ def check_and_resolve_open_trades():
                         s["status"] = "WIN (1:3 TP3 Hit)"
                         s["outcome_pnl"] = +3.0
                         s["resolved_at"] = datetime.now().strftime('%Y-%m-%d %H:%M')
+                        if auto_trader and auto_trader.is_live_enabled():
+                            auto_trader.close_position_market(s["symbol"], is_long, fraction=1.0)
                         if not s.get("notified_win"):
                             s["notified_win"] = True
                             send_telegram_resolution(s, "WIN_TP3")
@@ -1213,9 +1224,11 @@ def check_and_resolve_open_trades():
                     if is_tp2_touched and s["status"] in ["OPEN", "TP1_BE_RUNNING"]:
                         s["status"] = "TP2_LOCKED_RUNNING"
                         s["tp2_hit"] = True
-                        # Trail SL up to TP1 to lock in guaranteed profit
                         s["trailing_sl"] = s.get("tp1", s["entry"])
                         s["trailing_sl_str"] = fmt_price(s["trailing_sl"])
+                        if auto_trader and auto_trader.is_live_enabled():
+                            auto_trader.close_position_market(s["symbol"], is_long, fraction=0.50)
+                            auto_trader.trail_stop_loss(s["symbol"], is_long, s["trailing_sl"])
                         if not s.get("notified_tp2"):
                             s["notified_tp2"] = True
                             send_telegram_resolution(s, "WIN_TP2")
@@ -1225,10 +1238,12 @@ def check_and_resolve_open_trades():
                     if is_tp1_touched and s["status"] == "OPEN":
                         s["status"] = "TP1_BE_RUNNING"
                         s["tp1_hit"] = True
-                        # True Break-Even: Entry + 0.2% fee coverage buffer
                         true_be = s["entry"] * (1.0 + FEE_BUFFER_PCT) if is_long else s["entry"] * (1.0 - FEE_BUFFER_PCT)
                         s["trailing_sl"] = true_be
                         s["trailing_sl_str"] = fmt_price(true_be)
+                        if auto_trader and auto_trader.is_live_enabled():
+                            auto_trader.close_position_market(s["symbol"], is_long, fraction=0.50)
+                            auto_trader.trail_stop_loss(s["symbol"], is_long, true_be)
                         if not s.get("notified_tp1"):
                             s["notified_tp1"] = True
                             send_telegram_resolution(s, "WIN_TP1")
@@ -1337,6 +1352,15 @@ def record_new_signals_to_history(actionable_signals, history_data, open_symbols
             existing_keys.add(key)
             if initial_status == "OPEN":
                 active_positions_count += 1
+                if auto_trader and auto_trader.is_live_enabled():
+                    exec_res = auto_trader.execute_signal(act)
+                    if exec_res:
+                        new_item["binance_order_id"] = exec_res.get("order_id")
+                        new_item["binance_sl_order_id"] = exec_res.get("sl_order_id")
+                        new_item["executed_live"] = True
+                        act["executed_live"] = True
+                        act["executed_margin"] = exec_res.get("margin_usdt")
+                        act["executed_qty"] = exec_res.get("qty")
             send_telegram_new_signal(act)
 
     recalculate_history_stats(history_data)
