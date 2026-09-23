@@ -1,12 +1,12 @@
 {
-  "updated_at": "2026-09-23 10:39:47",
+  "updated_at": "2026-09-23 15:11:26",
   "total_signals": 48,
-  "total_closed": 27,
-  "wins": 22,
-  "losses": 5,
-  "pending": 21,
-  "win_rate_pct": 81.5,
-  "net_pnl_r": 28.0,
+  "total_closed": 32,
+  "wins": 23,
+  "losses": 9,
+  "pending": 16,
+  "win_rate_pct": 71.9,
+  "net_pnl_r": 25.5,
   "signals": [
     {
       "id": 1,
@@ -741,13 +741,15 @@
         "reward_pct": "12.27%",
         "dist_pct": "2.2%"
       },
-      "status": "OPEN",
-      "outcome_pnl": 0.0,
+      "status": "LOSS (SL Hit)",
+      "outcome_pnl": -1.0,
       "trailing_sl": 0.0041769,
       "trailing_sl_str": "0.004177",
       "session": "Global",
       "fvg": "None",
-      "sweep": "None"
+      "sweep": "None",
+      "resolved_at": "2026-09-23 15:11",
+      "notified_loss": true
     },
     {
       "id": 25,
@@ -811,13 +813,15 @@
       "tp": 0.7935250000000001,
       "tp_str": "0.793525",
       "limit_setup": null,
-      "status": "OPEN",
-      "outcome_pnl": 0.0,
+      "status": "LOSS (SL Hit)",
+      "outcome_pnl": -1.0,
       "trailing_sl": 0.7088249999999999,
       "trailing_sl_str": "0.708825",
       "session": "Global",
       "fvg": "None",
-      "sweep": "None"
+      "sweep": "None",
+      "resolved_at": "2026-09-23 15:11",
+      "notified_loss": true
     },
     {
       "id": 27,
@@ -1001,13 +1005,15 @@
       "tp": 0.14008300000000004,
       "tp_str": "0.140083",
       "limit_setup": null,
-      "status": "OPEN",
-      "outcome_pnl": 0.0,
+      "status": "LOSS (SL Hit)",
+      "outcome_pnl": -1.0,
       "trailing_sl": 0.123279,
       "trailing_sl_str": "0.123279",
       "session": "Global",
       "fvg": "None",
-      "sweep": "None"
+      "sweep": "None",
+      "resolved_at": "2026-09-23 15:11",
+      "notified_loss": true
     },
     {
       "id": 36,
@@ -1154,8 +1160,8 @@
       "tp": 0.07847475000000001,
       "tp_str": "0.078475",
       "limit_setup": null,
-      "status": "TP2_LOCKED_RUNNING",
-      "outcome_pnl": 0.0,
+      "status": "WIN (TP2 Trailed / Locked +1.5R)",
+      "outcome_pnl": 1.5,
       "trailing_sl": 0.07373737500000001,
       "trailing_sl_str": "0.073737",
       "session": "Global",
@@ -1164,7 +1170,9 @@
       "tp1_hit": true,
       "notified_tp1": true,
       "tp2_hit": true,
-      "notified_tp2": true
+      "notified_tp2": true,
+      "resolved_at": "2026-09-23 15:11",
+      "notified_loss": true
     },
     {
       "id": 45,
@@ -1452,13 +1460,15 @@
       "tp": 0.06398500000000001,
       "tp_str": "0.063985",
       "limit_setup": null,
-      "status": "OPEN",
-      "outcome_pnl": 0.0,
+      "status": "LOSS (SL Hit)",
+      "outcome_pnl": -1.0,
       "trailing_sl": 0.054405,
       "trailing_sl_str": "0.054405",
       "session": "Global",
       "fvg": "None",
-      "sweep": "None"
+      "sweep": "None",
+      "resolved_at": "2026-09-23 15:11",
+      "notified_loss": true
     },
     {
       "id": 55,
