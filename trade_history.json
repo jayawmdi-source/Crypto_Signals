@@ -1,12 +1,12 @@
 {
-  "updated_at": "2026-09-23 15:11:26",
+  "updated_at": "2026-09-23 19:03:01",
   "total_signals": 48,
-  "total_closed": 32,
+  "total_closed": 36,
   "wins": 23,
-  "losses": 9,
-  "pending": 16,
-  "win_rate_pct": 71.9,
-  "net_pnl_r": 25.5,
+  "losses": 13,
+  "pending": 12,
+  "win_rate_pct": 63.9,
+  "net_pnl_r": 21.5,
   "signals": [
     {
       "id": 1,
@@ -358,8 +358,8 @@
       "sl_str": "0.406312",
       "tp": 0.5798625000000001,
       "tp_str": "0.579863",
-      "status": "OPEN",
-      "outcome_pnl": 0.0,
+      "status": "LOSS (SL Hit)",
+      "outcome_pnl": -1.0,
       "tp1": 0.51478125,
       "tp1_str": "0.514781",
       "tp2": 0.536475,
@@ -379,7 +379,9 @@
       "trailing_sl_str": "0.406312",
       "session": "Global",
       "fvg": "None",
-      "sweep": "None"
+      "sweep": "None",
+      "resolved_at": "2026-09-23 19:02",
+      "notified_loss": true
     },
     {
       "id": 13,
@@ -1034,13 +1036,15 @@
       "tp": 0.27956250000000016,
       "tp_str": "0.279563",
       "limit_setup": null,
-      "status": "OPEN",
-      "outcome_pnl": 0.0,
+      "status": "LOSS (SL Hit)",
+      "outcome_pnl": -1.0,
       "trailing_sl": 0.22961249999999997,
       "trailing_sl_str": "0.229612",
       "session": "Global",
       "fvg": "None",
-      "sweep": "None"
+      "sweep": "None",
+      "resolved_at": "2026-09-23 19:02",
+      "notified_loss": true
     },
     {
       "id": 39,
@@ -1061,13 +1065,15 @@
       "tp": 22.578999999999994,
       "tp_str": "22.5790",
       "limit_setup": null,
-      "status": "OPEN",
-      "outcome_pnl": 0.0,
+      "status": "LOSS (SL Hit)",
+      "outcome_pnl": -1.0,
       "trailing_sl": 18.447000000000003,
       "trailing_sl_str": "18.4470",
       "session": "Global",
       "fvg": "None",
-      "sweep": "None"
+      "sweep": "None",
+      "resolved_at": "2026-09-23 19:02",
+      "notified_loss": true
     },
     {
       "id": 40,
@@ -1193,13 +1199,15 @@
       "tp": 0.24877500000000005,
       "tp_str": "0.248775",
       "limit_setup": null,
-      "status": "OPEN",
-      "outcome_pnl": 0.0,
+      "status": "LOSS (SL Hit)",
+      "outcome_pnl": -1.0,
       "trailing_sl": 0.199875,
       "trailing_sl_str": "0.199875",
       "session": "Global",
       "fvg": "None",
-      "sweep": "None"
+      "sweep": "None",
+      "resolved_at": "2026-09-23 19:02",
+      "notified_loss": true
     },
     {
       "id": 46,
@@ -1542,8 +1550,8 @@
     }
   ],
   "circuit_breaker": {
-    "is_tripped": false,
-    "losses_today": 1,
+    "is_tripped": true,
+    "losses_today": 5,
     "max_allowed": 2
   }
 }
