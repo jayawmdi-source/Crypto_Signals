@@ -1,0 +1,15 @@
+[Unit]
+Description=Binance SMC Signal Scanner 24/7 Service
+After=network.target
+
+[Service]
+Type=simple
+User=opc
+WorkingDirectory=/home/opc/Crypto_Signals
+ExecStart=/bin/bash /home/opc/Crypto_Signals/run_scanner_loop.sh
+Restart=always
+RestartSec=10
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target
