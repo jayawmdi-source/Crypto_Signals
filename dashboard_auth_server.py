@@ -178,13 +178,13 @@ LOGIN_HTML = """<!DOCTYPE html>
 """
 
 LOGOUT_INJECTION = """
-<!-- Institutional Logout Button Injection -->
-<div id="auth-logout-bar" style="position:fixed;top:14px;right:18px;z-index:999999;display:flex;align-items:center;gap:10px;">
-    <div style="background:rgba(18,20,24,0.92);border:1px solid rgba(240,185,11,0.3);padding:6px 14px;border-radius:24px;color:#f0b90b;font-family:sans-serif;font-size:12px;font-weight:600;display:flex;align-items:center;gap:6px;box-shadow:0 4px 12px rgba(0,0,0,0.5);backdrop-filter:blur(10px);">
-        <span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:#0ecb81;box-shadow:0 0 6px #0ecb81;"></span>
+<!-- Institutional Navbar Auth Badge -->
+<div id="auth-logout-bar" style="display:inline-flex;align-items:center;gap:8px;margin-left:10px;padding-left:10px;border-left:1px solid rgba(255,255,255,0.2);">
+    <div style="background:rgba(18,20,24,0.95);border:1px solid rgba(240,185,11,0.4);padding:4px 10px;border-radius:20px;color:#f0b90b;font-family:sans-serif;font-size:11px;font-weight:600;display:flex;align-items:center;gap:6px;">
+        <span style="display:inline-block;width:7px;height:7px;border-radius:50%;background:#0ecb81;box-shadow:0 0 6px #0ecb81;"></span>
         <span>{USER}</span>
     </div>
-    <a href="/logout" style="background:rgba(246,70,93,0.18);border:1px solid #f6465d;color:#ff6b7e;padding:6px 14px;border-radius:24px;font-family:sans-serif;font-size:12px;font-weight:600;text-decoration:none;display:flex;align-items:center;gap:6px;transition:all 0.2s;box-shadow:0 4px 12px rgba(0,0,0,0.4);backdrop-filter:blur(10px);" onmouseover="this.style.background='rgba(246,70,93,0.35)';this.style.color='#fff';" onmouseout="this.style.background='rgba(246,70,93,0.18)';this.style.color='#ff6b7e';">
+    <a href="/logout" style="background:rgba(246,70,93,0.18);border:1px solid #f6465d;color:#ff6b7e;padding:4px 10px;border-radius:20px;font-family:sans-serif;font-size:11px;font-weight:600;text-decoration:none;display:inline-flex;align-items:center;gap:4px;transition:all 0.2s;" onmouseover="this.style.background='rgba(246,70,93,0.35)';this.style.color='#fff';" onmouseout="this.style.background='rgba(246,70,93,0.18)';this.style.color='#ff6b7e';">
         <span>🚪</span>
         <span>Sign Out</span>
     </a>
@@ -275,7 +275,11 @@ class SecureDashboardHandler(SimpleHTTPRequestHandler):
                     with open(target_file, "r", encoding="utf-8") as f:
                         content = f.read()
                     injected_btn = LOGOUT_INJECTION.replace("{USER}", user)
-                    if "</body>" in content:
+                    if "<!-- AUTH_NAV_SLOT -->" in content:
+                        content = content.replace("<!-- AUTH_NAV_SLOT -->", injected_btn)
+                    elif "</span></span>" in content:
+                        content = content.replace("</span></span>", f"</span></span>{injected_btn}", 1)
+                    elif "</body>" in content:
                         content = content.replace("</body>", f"{injected_btn}</body>")
                     else:
                         content = content + injected_btn

@@ -1794,6 +1794,7 @@ def generate_html_dashboard(data, output_path):
                     <i class="fa-brands fa-bitcoin text-warning me-1"></i> BTC: <strong class="ms-1">{btc_status}</strong>
                 </span>
                 <span id="update-time" class="text-muted small">Updated: <span class="text-warning">{data.get('updated_at')}</span></span>
+                <!-- AUTH_NAV_SLOT -->
             </div>
         </div>
     </nav>
