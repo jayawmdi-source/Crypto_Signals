@@ -54,6 +54,7 @@ def send_telegram_message(message_html):
             pass
 
     if not token or not chat_id:
+        print("[!] Telegram alert skipped: Bot token or Chat ID not configured (telegram_config.json missing or incomplete).")
         return False
 
     url = f"https://api.telegram.org/bot{token}/sendMessage"
@@ -68,6 +69,22 @@ def send_telegram_message(message_html):
         if resp.status_code == 200:
             print("[+] Telegram alert sent successfully!")
             return True
+        elif resp.status_code == 400:
+            # Fallback to plain text in case of unescaped HTML characters (<, >, &)
+            import re
+            plain_text = re.sub(r'<[^>]*>', '', message_html)
+            fb_payload = {
+                "chat_id": chat_id,
+                "text": plain_text,
+                "disable_web_page_preview": True
+            }
+            fb_resp = session.post(url, json=fb_payload, timeout=8)
+            if fb_resp.status_code == 200:
+                print("[+] Telegram alert sent successfully (via plain text fallback)!")
+                return True
+            else:
+                print(f"[!] Telegram fallback failed ({fb_resp.status_code}): {fb_resp.text}")
+                return False
         else:
             print(f"[!] Telegram failed ({resp.status_code}): {resp.text}")
             return False
@@ -210,6 +227,52 @@ def send_telegram_new_signal(sig):
         f"📊 <b>RSI:</b> Daily {sig.get('rsi_daily', '-')} | 1H {sig.get('rsi_1h', '-')}\n\n"
         f"💡 <b>Key Confirmations:</b>\n{reasons_bullets}\n\n"
         f"🔗 <a href=\"https://www.binance.com/en/trade/{sig.get('symbol')}\">Trade #{sig.get('symbol')} on Binance</a>\n"
+        f"🌐 <a href=\"https://jayawmdi-source.github.io/Crypto_Signals/\">Open Live SMC Dashboard</a>"
+    )
+    send_telegram_message(msg.strip())
+
+def send_telegram_execution_alert(exec_res, sig):
+    """
+    Sends an instant, dedicated alert when an order is placed & filled on Binance Futures.
+    """
+    sym = exec_res.get("symbol") or sig.get("symbol", "")
+    side = exec_res.get("side") or ("BUY" if ("BUY" in sig.get("type", "") or "LONG" in sig.get("type", "")) else "SELL")
+    is_long = "BUY" in side or "LONG" in side
+    icon = "🟢" if is_long else "🔴"
+    action = "BUY / LONG 📈" if is_long else "SELL / SHORT 📉"
+    
+    margin = float(exec_res.get("margin_usdt") or 0.0)
+    leverage = exec_res.get("leverage") or 10
+    entry_p = exec_res.get("entry_price") or sig.get("raw_entry", 0.0)
+    sl_p = exec_res.get("sl_price") or sig.get("stop_loss", "-")
+    tp1_p = exec_res.get("tp1_price") or sig.get("tp_1", "-")
+    tp2_p = exec_res.get("tp2_price") or sig.get("tp_2", "-")
+    tp3_p = exec_res.get("tp_price") or sig.get("take_profit_1_3", "-")
+    order_id = exec_res.get("order_id", "-")
+    sl_order_id = exec_res.get("sl_order_id", "-")
+    qty = exec_res.get("qty", "-")
+
+    msg = (
+        f"🚨 <b>BINANCE LIVE TRADE EXECUTED!</b> {icon}\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n"
+        f"🪙 <b>PAIR:</b> #{sym}\n"
+        f"⚡ <b>ACTION:</b> <b>{action} ({leverage}x Isolated)</b>\n"
+        f"💵 <b>MARGIN USED:</b> <code>${margin:.2f} USDT</code> (10% Risk Allocation)\n"
+        f"📦 <b>ORDER QTY:</b> <code>{qty}</code>\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n"
+        f"🎯 <b>FILLED ENTRY:</b> <code>${fmt_price(entry_p)}</code>\n"
+        f"🛑 <b>STOP LOSS:</b> <code>${sl_p}</code> {'(Binance STOP_MARKET Active 🛡️)' if sl_order_id else '(Software Trailed 🛡️)'}\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n"
+        f"🏆 <b>INSTITUTIONAL TARGETS:</b>\n"
+        f"  • <b>TP1 (1:1.5):</b> <code>${tp1_p}</code> (50% Close + Move to Break-Even)\n"
+        f"  • <b>TP2 (1:2.0):</b> <code>${tp2_p}</code> (25% Close + Lock +1.5R)\n"
+        f"  • <b>TP3 (1:3.0):</b> <code>${tp3_p}</code> (Full Target)\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n"
+        f"🛡️ <b>RISK MANAGEMENT:</b>\n"
+        f"• Auto-Trailing Stop Loss: <b>ACTIVE</b>\n"
+        f"• Daily Drawdown Shield: <b>ACTIVE</b>\n"
+        f"• Binance Order ID: <code>{order_id}</code>\n\n"
+        f"🔗 <a href=\"https://www.binance.com/en/trade/{sym}\">View Live Trade on Binance</a>\n"
         f"🌐 <a href=\"https://jayawmdi-source.github.io/Crypto_Signals/\">Open Live SMC Dashboard</a>"
     )
     send_telegram_message(msg.strip())
@@ -1372,12 +1435,15 @@ def record_new_signals_to_history(actionable_signals, history_data, open_symbols
                     act["executed_margin"] = exec_res.get("margin_usdt")
                     act["executed_qty"] = exec_res.get("qty")
                     active_positions_count += 1
+                    send_telegram_execution_alert(exec_res, act)
                 else:
                     active_positions_count += 1
+                    send_telegram_new_signal(act)
+            else:
+                send_telegram_new_signal(act)
 
             existing_signals.append(new_item)
             existing_keys.add(key)
-            send_telegram_new_signal(act)
 
     recalculate_history_stats(history_data)
     with open(HISTORY_FILE, "w", encoding="utf-8") as f:
@@ -1385,7 +1451,12 @@ def record_new_signals_to_history(actionable_signals, history_data, open_symbols
 
     return history_data
 
-def get_top_pairs(limit=150):
+def get_top_pairs(limit=None):
+    if limit is None:
+        try:
+            limit = int(os.environ.get("SCAN_PAIRS_LIMIT", 100))
+        except Exception:
+            limit = 100
     try:
         # Prefer USDT-M Futures 24hr tickers so 100% of symbols are tradable on Futures
         url = "https://fapi.binance.com/fapi/v1/ticker/24hr"
@@ -1478,8 +1549,8 @@ def scan_all_pairs():
     btc_sentiment = get_btc_macro_sentiment()
     circuit_breaker = history_data.get("circuit_breaker", {})
 
-    # 4. Get Top 150 liquid pairs
-    pairs = get_top_pairs(limit=150)
+    # 4. Get Top liquid pairs (Configurable via SCAN_PAIRS_LIMIT, default 100)
+    pairs = get_top_pairs()
     for s_sym in open_symbols_before_scan:
         if s_sym not in pairs:
             pairs.append(s_sym)

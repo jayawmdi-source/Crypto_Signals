@@ -7,9 +7,9 @@
 # Change directory to the script's directory
 cd "$(dirname "$0")"
 
-# Default interval in seconds (60 seconds = 1 minute)
-# Change this if you want longer or shorter scan intervals
-INTERVAL=60
+# Default interval in seconds (180 seconds = 3 minutes)
+# 3 minutes is optimal for 1H & 4H SMC setups, preventing Binance 429 rate limit bans
+INTERVAL=${SCAN_INTERVAL:-180}
 
 echo "========================================================="
 echo "   Binance SMC Signal Scanner (24/7 Linux Auto-Scan)"
@@ -34,6 +34,20 @@ if ! python3 -c "import requests" &> /dev/null; then
     python3 -m pip install -r requirements.txt
 fi
 
+# Check config files
+if [ ! -f "telegram_config.json" ]; then
+    echo "  [⚠️ WARNING] telegram_config.json not found in $(pwd)!"
+    echo "  Telegram alerts will be skipped until telegram_config.json is created."
+else
+    echo "  [✓] Telegram config detected."
+fi
+
+if [ ! -f "binance_api_config.json" ]; then
+    echo "  [*] binance_api_config.json not found (Dry-run / Signal mode)."
+else
+    echo "  [✓] Binance API config detected (Live Auto-Trader active)."
+fi
+
 # Trap Ctrl+C (SIGINT) to exit cleanly
 trap "echo -e '\n[!] Scanner stopped by user.'; exit 0" SIGINT SIGTERM
 
@@ -42,7 +56,7 @@ while true; do
     echo "  [LIVE] Scanning Binance Pairs: $(date '+%Y-%m-%d %H:%M:%S')"
     echo "---------------------------------------------------------"
     
-    # Auto-pull only if new commits exist on GitHub (never wipe runtime files)
+    # Auto-pull only if new commits exist on GitHub (never wipe runtime/config files)
     git fetch origin main -q 2>/dev/null
     LOCAL=$(git rev-parse HEAD 2>/dev/null)
     REMOTE=$(git rev-parse origin/main 2>/dev/null)
@@ -52,6 +66,8 @@ while true; do
         [ -f "dashboard.html" ] && cp dashboard.html /tmp/_db.html 2>/dev/null
         [ -f "index.html" ] && cp index.html /tmp/_idx.html 2>/dev/null
         [ -f "trade_history.json" ] && cp trade_history.json /tmp/_th.json 2>/dev/null
+        [ -f "telegram_config.json" ] && cp telegram_config.json /tmp/_tg.json 2>/dev/null
+        [ -f "binance_api_config.json" ] && cp binance_api_config.json /tmp/_bac.json 2>/dev/null
 
         git reset --hard origin/main -q 2>/dev/null
 
@@ -59,6 +75,8 @@ while true; do
         [ -f "/tmp/_db.html" ] && cp /tmp/_db.html dashboard.html 2>/dev/null
         [ -f "/tmp/_idx.html" ] && cp /tmp/_idx.html index.html 2>/dev/null
         [ -f "/tmp/_th.json" ] && cp /tmp/_th.json trade_history.json 2>/dev/null
+        [ -f "/tmp/_tg.json" ] && cp /tmp/_tg.json telegram_config.json 2>/dev/null
+        [ -f "/tmp/_bac.json" ] && cp /tmp/_bac.json binance_api_config.json 2>/dev/null
     fi
     
     python3 binance_signal_scanner.py
