@@ -42,8 +42,24 @@ while true; do
     echo "  [LIVE] Scanning Binance Pairs: $(date '+%Y-%m-%d %H:%M:%S')"
     echo "---------------------------------------------------------"
     
-    # Auto-pull latest updates from GitHub
-    git fetch origin main -q 2>/dev/null && git reset --hard origin/main -q 2>/dev/null
+    # Auto-pull only if new commits exist on GitHub (never wipe runtime files)
+    git fetch origin main -q 2>/dev/null
+    LOCAL=$(git rev-parse HEAD 2>/dev/null)
+    REMOTE=$(git rev-parse origin/main 2>/dev/null)
+    if [ -n "$LOCAL" ] && [ -n "$REMOTE" ] && [ "$LOCAL" != "$REMOTE" ]; then
+        echo "[+] New code update detected from GitHub! Syncing..."
+        [ -f "latest_signals.json" ] && cp latest_signals.json /tmp/_ls.json 2>/dev/null
+        [ -f "dashboard.html" ] && cp dashboard.html /tmp/_db.html 2>/dev/null
+        [ -f "index.html" ] && cp index.html /tmp/_idx.html 2>/dev/null
+        [ -f "trade_history.json" ] && cp trade_history.json /tmp/_th.json 2>/dev/null
+
+        git reset --hard origin/main -q 2>/dev/null
+
+        [ -f "/tmp/_ls.json" ] && cp /tmp/_ls.json latest_signals.json 2>/dev/null
+        [ -f "/tmp/_db.html" ] && cp /tmp/_db.html dashboard.html 2>/dev/null
+        [ -f "/tmp/_idx.html" ] && cp /tmp/_idx.html index.html 2>/dev/null
+        [ -f "/tmp/_th.json" ] && cp /tmp/_th.json trade_history.json 2>/dev/null
+    fi
     
     python3 binance_signal_scanner.py
     

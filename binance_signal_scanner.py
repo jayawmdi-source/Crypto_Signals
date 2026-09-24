@@ -1982,8 +1982,10 @@ def generate_html_dashboard(data, output_path):
         const EMBEDDED_DATA = {data_json_str};
 
         function renderUI(data) {{
+            if (!data || typeof data !== 'object' || !data.active_signals) return;
             const active = data.active_signals || [];
             const container = document.getElementById('signals-container');
+            if (!container) return;
             container.innerHTML = "";
 
             if (active.length === 0) {{
@@ -2518,14 +2520,21 @@ def generate_html_dashboard(data, output_path):
             setInterval(fetchLivePrices, 4000);
             async function reloadDashboardData() {{
                 try {{
-                    const res = await fetch('/latest_signals.json?t=' + Date.now());
-                    if (res.ok) {{
+                    let res;
+                    try {{
+                        res = await fetch('latest_signals.json?t=' + Date.now());
+                    }} catch(e) {{
+                        res = await fetch('/latest_signals.json?t=' + Date.now());
+                    }}
+                    if (res && res.ok) {{
                         const freshData = await res.json();
-                        renderUI(freshData);
+                        if (freshData && (freshData.active_signals || freshData.real_positions)) {{
+                            renderUI(freshData);
+                        }}
                     }}
                 }} catch(e) {{}}
             }}
-            setInterval(reloadDashboardData, 15000);
+            setInterval(reloadDashboardData, 10000);
         }});
     </script>
 </body>
