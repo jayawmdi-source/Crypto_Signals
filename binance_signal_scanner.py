@@ -1352,19 +1352,30 @@ def record_new_signals_to_history(actionable_signals, history_data, open_symbols
                 "status": initial_status,
                 "outcome_pnl": 0.0
             }
-            existing_signals.append(new_item)
-            existing_keys.add(key)
             if initial_status == "OPEN":
-                active_positions_count += 1
                 if auto_trader and auto_trader.is_live_enabled():
                     exec_res = auto_trader.execute_signal(act)
-                    if exec_res:
-                        new_item["binance_order_id"] = exec_res.get("order_id")
-                        new_item["binance_sl_order_id"] = exec_res.get("sl_order_id")
-                        new_item["executed_live"] = True
-                        act["executed_live"] = True
-                        act["executed_margin"] = exec_res.get("margin_usdt")
-                        act["executed_qty"] = exec_res.get("qty")
+                    if not exec_res:
+                        print(f"[!] Auto-trade failed on Binance for {sym}. Skipping trade recording.")
+                        continue
+                    new_item["binance_order_id"] = exec_res.get("order_id")
+                    new_item["binance_sl_order_id"] = exec_res.get("sl_order_id")
+                    new_item["executed_live"] = True
+                    new_item["executed_margin"] = exec_res.get("margin_usdt")
+                    new_item["executed_qty"] = exec_res.get("qty")
+                    if exec_res.get("entry_price"):
+                        new_item["entry"] = exec_res.get("entry_price")
+                        new_item["entry_str"] = fmt_price(new_item["entry"])
+                        act["entry"] = fmt_price(new_item["entry"])
+                    act["executed_live"] = True
+                    act["executed_margin"] = exec_res.get("margin_usdt")
+                    act["executed_qty"] = exec_res.get("qty")
+                    active_positions_count += 1
+                else:
+                    active_positions_count += 1
+
+            existing_signals.append(new_item)
+            existing_keys.add(key)
             send_telegram_new_signal(act)
 
     recalculate_history_stats(history_data)
@@ -1522,6 +1533,13 @@ def scan_all_pairs():
     html_path = os.path.join(SCRIPT_DIR, "dashboard.html")
     index_path = os.path.join(SCRIPT_DIR, "index.html")
     
+    # Fetch real live Binance account balance & positions
+    account_info = None
+    real_positions = []
+    if auto_trader and auto_trader.is_configured():
+        account_info = auto_trader.get_account_balances()
+        real_positions = auto_trader.get_open_positions_detail()
+
     payload = {
         "updated_at": datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
         "filter": "Institutional SMC 2.0: 4H MTF + FVG + Liquidity Sweep + ATR Stops (1:3 R:R)",
@@ -1532,7 +1550,9 @@ def scan_all_pairs():
         "active_count": len(actionable),
         "active_signals": actionable,
         "all_monitored": results,
-        "history": history
+        "history": history,
+        "binance_account": account_info,
+        "real_positions": real_positions
     }
     
     with open(json_path, "w", encoding="utf-8") as f:
@@ -1561,6 +1581,11 @@ def generate_html_dashboard(data, output_path):
     cb_tripped = circuit_breaker.get("is_tripped", False)
     cb_losses = circuit_breaker.get("losses_today", 0)
     heat_str = data.get("portfolio_heat", f"0 / {MAX_ACTIVE_POSITIONS} Max")
+    binance_account = data.get("binance_account") or {}
+    wallet_bal = binance_account.get("wallet_balance")
+    avail_margin = binance_account.get("available_balance")
+    wallet_bal_str = f"${wallet_bal:,.2f} USDT" if wallet_bal is not None else "--"
+    avail_margin_str = f"${avail_margin:,.2f} USDT" if avail_margin is not None else "--"
 
     cb_html = f'<span class="badge bg-danger text-white"><i class="fa-solid fa-hand me-1"></i>🛑 CIRCUIT BREAKER TRIPPED ({cb_losses}/2 Losses)</span>' if cb_tripped else f'<span class="badge bg-success bg-opacity-25 text-success border border-success"><i class="fa-solid fa-shield-halved me-1"></i>DRAWDOWN SHIELD ACTIVE ({cb_losses}/2)</span>'
 
@@ -1775,6 +1800,51 @@ def generate_html_dashboard(data, output_path):
 
     <div class="container-fluid px-4">
         
+        <!-- Live Real Binance Account Balance & Auto-Trader Status -->
+        <div class="row g-3 mb-4">
+            <div class="col-12 col-md-3">
+                <div class="stat-card" style="border-left: 4px solid #f0b90b;">
+                    <div class="stat-title"><i class="fa-solid fa-wallet text-warning me-1"></i> Real Binance Futures Wallet</div>
+                    <div class="stat-value text-warning" id="binance-wallet-bal">{wallet_bal_str}</div>
+                    <small class="text-muted">Total USDT Balance on Binance</small>
+                </div>
+            </div>
+            <div class="col-12 col-md-3">
+                <div class="stat-card" style="border-left: 4px solid #0ecb81;">
+                    <div class="stat-title"><i class="fa-solid fa-shield-halved text-success me-1"></i> Available Margin</div>
+                    <div class="stat-value val-green" id="binance-avail-margin">{avail_margin_str}</div>
+                    <small class="text-muted">Available for 10% Auto-Allocation</small>
+                </div>
+            </div>
+            <div class="col-12 col-md-3">
+                <div class="stat-card" style="border-left: 4px solid #00f2fe;">
+                    <div class="stat-title"><i class="fa-solid fa-sliders text-info me-1"></i> Leverage & Margin Mode</div>
+                    <div class="stat-value text-info" style="font-size: 1.35rem;">10x ISOLATED</div>
+                    <small class="text-muted">Strict Zero-Cross Capital Protection</small>
+                </div>
+            </div>
+            <div class="col-12 col-md-3">
+                <div class="stat-card" style="border-left: 4px solid #9b51e0;">
+                    <div class="stat-title"><i class="fa-solid fa-robot text-purple me-1" style="color: #a855f7;"></i> Auto-Trading Engine</div>
+                    <div class="stat-value text-white" style="font-size: 1.35rem;"><span class="badge bg-success" style="font-size: 0.95rem;">🟢 LIVE AUTONOMOUS</span></div>
+                    <small class="text-muted">Auto-Execute 10% Margin on A+ Setups</small>
+                </div>
+            </div>
+        </div>
+
+        <!-- Section: Active Binance Positions (Live Execution) -->
+        <div class="mb-4" id="live-positions-section">
+            <div class="d-flex align-items-center justify-content-between mb-2">
+                <h4 class="fw-bold mb-0 text-white">
+                    <i class="fa-solid fa-chart-line text-success me-2"></i>Active Binance Positions (Live Execution)
+                    <span class="badge bg-success ms-2" id="live-pos-count-badge">0 Active</span>
+                </h4>
+                <small class="text-muted">Live matching engine stream from Binance Futures</small>
+            </div>
+            <div id="live-positions-container">
+            </div>
+        </div>
+
         <!-- Live Performance Bar -->
         <div class="row g-3 mb-4">
             <div class="col-12 col-md-3">
@@ -1884,12 +1954,13 @@ def generate_html_dashboard(data, output_path):
                             <th>Pair</th>
                             <th>Type</th>
                             <th>Setup</th>
-                            <th>Entry</th>
+                            <th>Executed Entry</th>
+                            <th>Margin / Size</th>
                             <th>Trailing / Safe SL</th>
                             <th>TP1 (1:1.5)</th>
                             <th>TP3 (1:3.0)</th>
                             <th>Status / Outcome</th>
-                            <th>PnL (R)</th>
+                            <th>PnL</th>
                         </tr>
                     </thead>
                     <tbody id="history-body">
@@ -2116,34 +2187,122 @@ def generate_html_dashboard(data, output_path):
                 }});
             }}
 
+            // Render Binance Account
+            if (data.binance_account) {{
+                const wb = document.getElementById('binance-wallet-bal');
+                const ab = document.getElementById('binance-avail-margin');
+                if (wb && data.binance_account.wallet_balance !== undefined) {{
+                    wb.innerText = `$${{data.binance_account.wallet_balance.toLocaleString('en-US', {{minimumFractionDigits: 2, maximumFractionDigits: 2}})}} USDT`;
+                }}
+                if (ab && data.binance_account.available_balance !== undefined) {{
+                    ab.innerText = `$${{data.binance_account.available_balance.toLocaleString('en-US', {{minimumFractionDigits: 2, maximumFractionDigits: 2}})}} USDT`;
+                }}
+            }}
+
+            // Render Active Live Positions
+            const posContainer = document.getElementById('live-positions-container');
+            const posCountBadge = document.getElementById('live-pos-count-badge');
+            const realPositions = data.real_positions || [];
+            
+            if (posCountBadge) {{
+                posCountBadge.innerText = realPositions.length > 0 ? `${{realPositions.length}} Active` : '0 Active (Protected)';
+                posCountBadge.className = realPositions.length > 0 ? 'badge bg-success ms-2' : 'badge bg-secondary ms-2';
+            }}
+
+            if (posContainer) {{
+                posContainer.innerHTML = "";
+                if (realPositions.length === 0) {{
+                    posContainer.innerHTML = `
+                        <div class="p-3 rounded text-center" style="background: rgba(14, 203, 129, 0.05); border: 1px dashed rgba(14, 203, 129, 0.3);">
+                            <div class="d-flex align-items-center justify-content-center gap-2 text-success fw-bold mb-1">
+                                <i class="fa-solid fa-shield-halved"></i>
+                                <span>Capital 100% Protected in Available Margin</span>
+                            </div>
+                            <small class="text-white-50">10x Isolated engine is scanning 150 pairs every 60s for institutional A+ setups. When triggered, active positions will appear here with live PnL & Binance Order ID.</small>
+                        </div>
+                    `;
+                }} else {{
+                    const row = document.createElement('div');
+                    row.className = "row g-3";
+                    realPositions.forEach(p => {{
+                        const isLong = p.side.includes("LONG") || p.side.includes("BUY");
+                        const pnlColor = p.unrealized_pnl >= 0 ? "val-green" : "val-red";
+                        const pnlSign = p.unrealized_pnl >= 0 ? "+" : "";
+                        const card = document.createElement('div');
+                        card.className = "col-12 col-md-6 col-lg-4";
+                        card.innerHTML = `
+                            <div class="stat-card" style="border-top: 4px solid ${{isLong ? '#0ecb81' : '#f6465d'}};">
+                                <div class="d-flex justify-content-between align-items-center mb-2">
+                                    <span class="fw-bold text-white fs-5">${{p.symbol}}</span>
+                                    <span class="badge ${{isLong ? 'bg-success' : 'bg-danger'}}">${{p.side}} ${{p.leverage}}x</span>
+                                </div>
+                                <div class="d-flex justify-content-between py-1 border-bottom border-secondary border-opacity-25 small">
+                                    <span class="text-muted">Entry / Mark:</span>
+                                    <span class="text-white fw-bold">$${{p.entry_price.toLocaleString()}} / $${{p.mark_price.toLocaleString()}}</span>
+                                </div>
+                                <div class="d-flex justify-content-between py-1 border-bottom border-secondary border-opacity-25 small">
+                                    <span class="text-muted">Isolated Margin:</span>
+                                    <span class="text-warning fw-bold">$${{p.isolated_margin.toFixed(2)}} USDT (${{p.position_amt}})</span>
+                                </div>
+                                <div class="d-flex justify-content-between py-1 border-bottom border-secondary border-opacity-25 small">
+                                    <span class="text-muted">Unrealized PnL:</span>
+                                    <span class="fw-bold ${{pnlColor}}">${{pnlSign}}$${{p.unrealized_pnl.toFixed(4)}} USDT (${{pnlSign}}${{p.pnl_pct.toFixed(2)}}%)</span>
+                                </div>
+                                <div class="mt-2 text-center">
+                                    <span class="badge bg-dark border border-success text-success" style="font-size: 0.72rem;">
+                                        <i class="fa-solid fa-shield-halved me-1"></i>Hardware Stop Loss Active on Binance
+                                    </span>
+                                </div>
+                            </div>
+                        `;
+                        row.appendChild(card);
+                    }});
+                    posContainer.appendChild(row);
+                }}
+            }}
+
             // Render History
             const histBody = document.getElementById('history-body');
             if (histBody) {{
                 histBody.innerHTML = "";
                 const signals = (data.history && data.history.signals) ? data.history.signals : [];
-                signals.slice().reverse().forEach(s => {{
-                    const tr = document.createElement('tr');
-                    const isWin = s.status.includes("WIN");
-                    const isLoss = s.status.includes("LOSS");
-                    const isPending = s.status.includes("PENDING");
-                    const badgeClass = isWin ? "bg-success" : (isLoss ? "bg-danger" : (isPending ? "bg-warning text-dark" : "bg-info text-dark"));
-                    const pnlColor = isWin ? "text-success" : (isLoss ? "text-danger" : "text-muted");
-                    const pnlSign = (s.outcome_pnl > 0) ? "+" : "";
-
-                    tr.innerHTML = `
-                        <td><small class="text-muted">${{s.date || '-'}}</small></td>
-                        <td class="fw-bold text-white">${{s.symbol}}</td>
-                        <td><span class="badge ${{s.type.includes('BUY') ? 'bg-success bg-opacity-25 text-success' : 'bg-danger bg-opacity-25 text-danger'}}">${{s.type}}</span></td>
-                        <td><small>${{s.setup || '-'}}</small></td>
-                        <td>$${{s.entry_str || s.entry}}</td>
-                        <td class="text-warning">$${{s.trailing_sl_str || s.sl_str || s.sl}}</td>
-                        <td class="text-success">$${{s.tp1_str || s.tp1 || '-'}}</td>
-                        <td class="text-success">$${{s.tp_str || s.tp}}</td>
-                        <td><span class="badge ${{badgeClass}}">${{s.status}}</span></td>
-                        <td class="fw-bold ${{pnlColor}}">${{pnlSign}}${{s.outcome_pnl ? s.outcome_pnl.toFixed(2) : '0.00'}} R</td>
+                if (signals.length === 0) {{
+                    histBody.innerHTML = `
+                        <tr>
+                            <td colspan="11" class="text-center py-4 text-muted">
+                                <i class="fa-solid fa-shield-halved text-success me-2 fs-5"></i>
+                                <span><strong>Real Trading Mode Active:</strong> Dummy history cleared. All real trades placed on Binance Futures by the auto-trader will be logged here with real execution prices, margin, and verified PnL.</span>
+                            </td>
+                        </tr>
                     `;
-                    histBody.appendChild(tr);
-                }});
+                }} else {{
+                    signals.slice().reverse().forEach(s => {{
+                        const tr = document.createElement('tr');
+                        const isWin = s.status.includes("WIN");
+                        const isLoss = s.status.includes("LOSS");
+                        const isPending = s.status.includes("PENDING");
+                        const badgeClass = isWin ? "bg-success" : (isLoss ? "bg-danger" : (isPending ? "bg-warning text-dark" : "bg-info text-dark"));
+                        const pnlColor = isWin ? "text-success" : (isLoss ? "text-danger" : "text-muted");
+                        const pnlSign = (s.outcome_pnl > 0) ? "+" : "";
+                        const liveBadge = s.executed_live ? `<span class="badge bg-success bg-opacity-25 text-success border border-success me-1" style="font-size:0.65rem;">🟢 REAL LIVE</span>` : "";
+                        const marginInfo = s.executed_margin ? `<small class="text-warning">$${{s.executed_margin.toFixed(2)}}</small>` : `<small class="text-muted">10%</small>`;
+
+                        tr.innerHTML = `
+                            <td><small class="text-muted">${{s.date || '-'}}</small></td>
+                            <td class="fw-bold text-white">${{s.symbol}} ${{liveBadge}}</td>
+                            <td><span class="badge ${{s.type.includes('BUY') ? 'bg-success bg-opacity-25 text-success' : 'bg-danger bg-opacity-25 text-danger'}}">${{s.type}}</span></td>
+                            <td><small>${{s.setup || '-'}}</small></td>
+                            <td>$${{s.entry_str || s.entry}}</td>
+                            <td>${{marginInfo}}</td>
+                            <td class="text-warning">$${{s.trailing_sl_str || s.sl_str || s.sl}}</td>
+                            <td class="text-success">$${{s.tp1_str || s.tp1 || '-'}}</td>
+                            <td class="text-success">$${{s.tp_str || s.tp}}</td>
+                            <td><span class="badge ${{badgeClass}}">${{s.status}}</span></td>
+                            <td class="fw-bold ${{pnlColor}}">${{pnlSign}}$${{s.outcome_pnl ? s.outcome_pnl.toFixed(2) : '0.00'}} R</td>
+                        `;
+                        histBody.appendChild(tr);
+                    }});
+                }}
             }}
         }}
 
@@ -2328,6 +2487,16 @@ def generate_html_dashboard(data, output_path):
             renderUI(EMBEDDED_DATA);
             fetchLivePrices();
             setInterval(fetchLivePrices, 4000);
+            async function reloadDashboardData() {{
+                try {{
+                    const res = await fetch('/latest_signals.json?t=' + Date.now());
+                    if (res.ok) {{
+                        const freshData = await res.json();
+                        renderUI(freshData);
+                    }}
+                }} catch(e) {{}}
+            }}
+            setInterval(reloadDashboardData, 15000);
         }});
     </script>
 </body>

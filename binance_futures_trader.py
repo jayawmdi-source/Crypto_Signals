@@ -235,6 +235,56 @@ class BinanceFuturesTrader:
             print(f"[!] Error fetching positionRisk for all symbols: {e}")
         return []
 
+    def get_open_positions_detail(self):
+        """Fetch full details for all actively open positions on Binance Futures"""
+        if not self.is_configured():
+            return []
+        try:
+            params = self._sign_request()
+            resp = self.session.get(f"{BASE_URL}/fapi/v2/positionRisk", params=params, timeout=8)
+            if resp.status_code == 200:
+                open_positions = []
+                for p in resp.json():
+                    amt = float(p.get("positionAmt", 0.0))
+                    if abs(amt) > 0:
+                        entry_p = float(p.get("entryPrice", 0.0))
+                        mark_p = float(p.get("markPrice", 0.0))
+                        unrealized_pnl = float(p.get("unRealizedProfit", 0.0))
+                        lev = int(p.get("leverage", self.leverage))
+                        margin = float(p.get("isolatedMargin", 0.0)) or (abs(amt) * entry_p / lev if lev > 0 else 0.0)
+                        side = "BUY / LONG" if amt > 0 else "SELL / SHORT"
+                        pnl_pct = ((mark_p - entry_p) / entry_p * 100 * lev) if (side == "BUY / LONG" and entry_p > 0) else (((entry_p - mark_p) / entry_p * 100 * lev) if entry_p > 0 else 0.0)
+                        open_positions.append({
+                            "symbol": p.get("symbol"),
+                            "side": side,
+                            "position_amt": abs(amt),
+                            "entry_price": entry_p,
+                            "mark_price": mark_p,
+                            "unrealized_pnl": round(unrealized_pnl, 4),
+                            "pnl_pct": round(pnl_pct, 2),
+                            "leverage": lev,
+                            "margin_type": p.get("marginType", "isolated").upper(),
+                            "isolated_margin": round(margin, 2),
+                            "liquidation_price": float(p.get("liquidationPrice", 0.0))
+                        })
+                return open_positions
+        except Exception as e:
+            print(f"[!] Error fetching position details: {e}")
+        return []
+
+    def get_recent_income(self, limit=10):
+        """Fetch recent realized PnL and trade income from Binance Futures"""
+        if not self.is_configured():
+            return []
+        try:
+            params = self._sign_request({"incomeType": "REALIZED_PNL", "limit": limit})
+            resp = self.session.get(f"{BASE_URL}/fapi/v1/income", params=params, timeout=8)
+            if resp.status_code == 200:
+                return resp.json()
+        except Exception as e:
+            print(f"[!] Error fetching Binance income: {e}")
+        return []
+
     def get_open_position(self, symbol):
         """Check if an open position already exists on Binance"""
         try:
@@ -308,6 +358,11 @@ class BinanceFuturesTrader:
         sl_formatted = self.round_price(sl_price, rules["tick_size"], rules["tick_decimals"])
         tp_formatted = self.round_price(tp_price, rules["tick_size"], rules["tick_decimals"])
 
+        raw_tp1 = sig.get("raw_tp1")
+        raw_tp2 = sig.get("raw_tp2")
+        tp1_formatted = self.round_price(raw_tp1, rules["tick_size"], rules["tick_decimals"]) if raw_tp1 else "-"
+        tp2_formatted = self.round_price(raw_tp2, rules["tick_size"], rules["tick_decimals"]) if raw_tp2 else "-"
+
         if order_qty < rules["min_qty"]:
             print(f"[!] Auto-Trader: Order qty {order_qty} is below symbol minQty {rules['min_qty']}.")
             return None
@@ -367,6 +422,8 @@ class BinanceFuturesTrader:
                 "entry_price": avg_price,
                 "sl_price": sl_formatted,
                 "sl_order_id": sl_order_id,
+                "tp1_price": tp1_formatted,
+                "tp2_price": tp2_formatted,
                 "tp_price": tp_formatted,
                 "order_id": order_result.get("orderId"),
                 "status": "FILLED"
