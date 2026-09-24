@@ -1332,7 +1332,8 @@ def check_and_resolve_open_trades():
                     entry_p = float(rp.get("entry_price", 0.0))
                     if entry_p > 0:
                         safe_sl = entry_p * 0.96 if rp_is_long else entry_p * 1.04
-                        auto_trader.ensure_position_protection(rp_sym, rp_is_long, safe_sl, None, abs(rp_amt))
+                        safe_tp = entry_p * 1.08 if rp_is_long else entry_p * 0.92
+                        auto_trader.ensure_position_protection(rp_sym, rp_is_long, safe_sl, safe_tp, abs(rp_amt))
         except Exception as e_prot:
             print(f"[!] Protection auto-shield sync error: {e_prot}")
 
