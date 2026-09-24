@@ -42,6 +42,9 @@ while true; do
     echo "  [LIVE] Scanning Binance Pairs: $(date '+%Y-%m-%d %H:%M:%S')"
     echo "---------------------------------------------------------"
     
+    # Auto-pull latest updates from GitHub
+    git fetch origin main -q 2>/dev/null && git reset --hard origin/main -q 2>/dev/null
+    
     python3 binance_signal_scanner.py
     
     echo ""
