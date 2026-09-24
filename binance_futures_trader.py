@@ -35,6 +35,7 @@ class BinanceFuturesTrader:
         self.position_size_pct = float(os.environ.get("BINANCE_POSITION_SIZE_PCT", 10.0))
         self.enable_trading = os.environ.get("BINANCE_ENABLE_TRADING", "false").lower() == "true"
         self.margin_type = "ISOLATED"
+        self.is_hedge_mode = True  # Default to Hedge Mode (Dual-Side)
         
         self.load_config()
         self.session = requests.Session()
@@ -49,6 +50,7 @@ class BinanceFuturesTrader:
         self._time_offset = 0
         if self.is_configured():
             self.sync_time()
+            self.check_position_mode()
 
     def load_config(self):
         if os.path.exists(self.config_path):
@@ -79,6 +81,18 @@ class BinanceFuturesTrader:
                 self._time_offset = server_time - local_time
         except Exception:
             self._time_offset = 0
+
+    def check_position_mode(self):
+        """Detect whether account is in Hedge Mode (dualSidePosition=True) or One-Way Mode"""
+        try:
+            params = self._sign_request()
+            resp = self.session.get(f"{BASE_URL}/fapi/v1/positionSide/dual", params=params, timeout=6)
+            if resp.status_code == 200:
+                self.is_hedge_mode = bool(resp.json().get("dualSidePosition", True))
+                mode_str = "Hedge Mode (Dual-Side)" if self.is_hedge_mode else "One-Way Mode"
+                print(f"[+] Binance Account Position Mode: {mode_str}")
+        except Exception as e:
+            print(f"[!] Note: Error checking position side mode (defaulting to Hedge Mode): {e}")
 
     def _sign_request(self, params=None):
         if params is None:
@@ -317,6 +331,7 @@ class BinanceFuturesTrader:
         is_long = "BUY" in sig_type or "LONG" in sig_type
         side = "BUY" if is_long else "SELL"
         exit_side = "SELL" if is_long else "BUY"
+        pos_side = ("LONG" if is_long else "SHORT") if self.is_hedge_mode else "BOTH"
 
         entry_price = float(sig.get("raw_entry") or sig.get("entry", 0))
         sl_price = float(sig.get("raw_sl") or sig.get("sl", 0))
@@ -380,12 +395,13 @@ class BinanceFuturesTrader:
         entry_params = self._sign_request({
             "symbol": symbol,
             "side": side,
+            "positionSide": pos_side,
             "type": "MARKET",
             "quantity": order_qty
         })
 
         try:
-            print(f"[🚀] Placing LIVE {side} MARKET order for {symbol} | Qty: {order_qty} (~${margin_allocated:.2f} Margin @ {self.leverage}x)...")
+            print(f"[🚀] Placing LIVE {side} ({pos_side}) MARKET order for {symbol} | Qty: {order_qty} (~${margin_allocated:.2f} Margin @ {self.leverage}x)...")
             resp = self.session.post(f"{BASE_URL}/fapi/v1/order", data=entry_params, timeout=10)
             if resp.status_code != 200:
                 print(f"[!] Binance Order Error ({resp.status_code}): {resp.text}")
@@ -395,21 +411,23 @@ class BinanceFuturesTrader:
             avg_price = float(order_result.get("avgPrice") or entry_price)
             print(f"[✅] {symbol} FILLED @ ${avg_price:.6f} | Order ID: {order_result.get('orderId')}")
 
-            # 5. Instantly place Hardware STOP_MARKET Order (closePosition=true)
+            # 5. Instantly place Hardware STOP_MARKET Order via Algo Order API
             sl_params = self._sign_request({
+                "algoType": "CONDITIONAL",
                 "symbol": symbol,
                 "side": exit_side,
+                "positionSide": pos_side,
                 "type": "STOP_MARKET",
-                "stopPrice": sl_formatted,
+                "triggerPrice": sl_formatted,
                 "closePosition": "true",
                 "workingType": "MARK_PRICE"
             })
-            sl_resp = self.session.post(f"{BASE_URL}/fapi/v1/order", data=sl_params, timeout=10)
+            sl_resp = self.session.post(f"{BASE_URL}/fapi/v1/algoOrder", data=sl_params, timeout=10)
             sl_order_id = None
             if sl_resp.status_code == 200:
                 sl_res = sl_resp.json()
-                sl_order_id = sl_res.get("orderId")
-                print(f"[🛡️] {symbol} STOP_MARKET placed @ ${sl_formatted} (Order ID: {sl_order_id})")
+                sl_order_id = sl_res.get("algoId") or sl_res.get("orderId")
+                print(f"[🛡️] {symbol} STOP_MARKET placed @ ${sl_formatted} (Algo ID: {sl_order_id})")
             else:
                 print(f"[!] WARNING: Failed to place STOP_MARKET for {symbol}: {sl_resp.text}")
 
@@ -444,25 +462,30 @@ class BinanceFuturesTrader:
             return False
         sl_formatted = self.round_price(new_sl_price, rules["tick_size"], rules["tick_decimals"])
         exit_side = "SELL" if is_long else "BUY"
+        pos_side = ("LONG" if is_long else "SHORT") if self.is_hedge_mode else "BOTH"
 
-        # Cancel existing open algo orders
         try:
-            cancel_params = self._sign_request({"symbol": symbol})
-            self.session.delete(f"{BASE_URL}/fapi/v1/allOpenOrders", data=cancel_params, timeout=8)
+            # Cancel existing open algo orders
+            cancel_algo = self._sign_request({"symbol": symbol})
+            self.session.delete(f"{BASE_URL}/fapi/v1/algoOpenOrders", data=cancel_algo, timeout=8)
             
-            # Place new STOP_MARKET
+            # Place new STOP_MARKET via algoOrder
             sl_params = self._sign_request({
+                "algoType": "CONDITIONAL",
                 "symbol": symbol,
                 "side": exit_side,
+                "positionSide": pos_side,
                 "type": "STOP_MARKET",
-                "stopPrice": sl_formatted,
+                "triggerPrice": sl_formatted,
                 "closePosition": "true",
                 "workingType": "MARK_PRICE"
             })
-            resp = self.session.post(f"{BASE_URL}/fapi/v1/order", data=sl_params, timeout=8)
+            resp = self.session.post(f"{BASE_URL}/fapi/v1/algoOrder", data=sl_params, timeout=8)
             if resp.status_code == 200:
                 print(f"[🔒] {symbol}: Stop Loss trailed to ${sl_formatted}")
                 return True
+            else:
+                print(f"[!] Error trailing stop loss for {symbol}: {resp.text}")
         except Exception as e:
             print(f"[!] Error trailing stop loss for {symbol}: {e}")
         return False
@@ -489,18 +512,31 @@ class BinanceFuturesTrader:
             qty_to_close = current_amt
 
         exit_side = "SELL" if is_long else "BUY"
-        params = self._sign_request({
+        pos_side = ("LONG" if is_long else "SHORT") if self.is_hedge_mode else "BOTH"
+
+        order_data = {
             "symbol": symbol,
             "side": exit_side,
+            "positionSide": pos_side,
             "type": "MARKET",
-            "quantity": qty_to_close,
-            "reduceOnly": "true"
-        })
+            "quantity": qty_to_close
+        }
+        if not self.is_hedge_mode:
+            order_data["reduceOnly"] = "true"
+
+        params = self._sign_request(order_data)
 
         try:
             resp = self.session.post(f"{BASE_URL}/fapi/v1/order", data=params, timeout=8)
             if resp.status_code == 200:
                 print(f"[💰] {symbol}: Partial/Full Close ({fraction*100:.0f}%) executed: {qty_to_close}")
+                # If closing 100%, also cancel open algo orders
+                if fraction >= 0.95:
+                    try:
+                        c_params = self._sign_request({"symbol": symbol})
+                        self.session.delete(f"{BASE_URL}/fapi/v1/algoOpenOrders", data=c_params, timeout=5)
+                    except Exception:
+                        pass
                 return True
             else:
                 print(f"[!] Close order error: {resp.text}")

@@ -1386,8 +1386,13 @@ def record_new_signals_to_history(actionable_signals, history_data, open_symbols
 
 def get_top_pairs(limit=150):
     try:
-        url = "https://api.binance.com/api/v3/ticker/24hr"
+        # Prefer USDT-M Futures 24hr tickers so 100% of symbols are tradable on Futures
+        url = "https://fapi.binance.com/fapi/v1/ticker/24hr"
         resp = session.get(url, timeout=10)
+        if resp.status_code != 200:
+            url = "https://api.binance.com/api/v3/ticker/24hr"
+            resp = session.get(url, timeout=10)
+
         if resp.status_code == 200:
             data = resp.json()
             real_b_cryptos = {'BNBUSDT', 'DGBUSDT', 'TRBUSDT', 'CKBUSDT', 'SHIBUSDT', 'MOBUSDT', 'PHBUSDT', 'VIBUSDT', 'AMBUSDT', 'ARBUSDT', 'BBUSDT', 'YBUSDT', 'STXUSDT'}
@@ -1398,7 +1403,7 @@ def get_top_pairs(limit=150):
                 sym = t.get('symbol', '')
                 if not sym.endswith('USDT'):
                     continue
-                if any(x in sym for x in ['UPUSDT', 'DOWNUSDT', 'BULLUSDT', 'BEARUSDT']):
+                if any(x in sym for x in ['UPUSDT', 'DOWNUSDT', 'BULLUSDT', 'BEARUSDT', '_']):
                     continue
                 if sym in stables_and_junk:
                     continue
@@ -1410,7 +1415,7 @@ def get_top_pairs(limit=150):
             top_symbols = [t['symbol'] for t in usdt_pairs[:limit]]
             if len(top_symbols) >= 30:
                 min_vol = float(usdt_pairs[len(top_symbols)-1].get('quoteVolume', 0)) / 1e6
-                print(f"[+] Selected Top {len(top_symbols)} Pure Crypto Pairs by 24h Volume (Min Vol: ${min_vol:.1f}M)")
+                print(f"[+] Selected Top {len(top_symbols)} Pure Crypto Futures Pairs by 24h Volume (Min Vol: ${min_vol:.1f}M)")
                 return top_symbols
     except Exception as e:
         print(f"[!] Warning: Dynamic Top 150 fetch failed ({e}). Using curated list.")
@@ -1851,28 +1856,28 @@ def generate_html_dashboard(data, output_path):
             <div class="col-12 col-md-3">
                 <div class="stat-card">
                     <div class="stat-title"><i class="fa-solid fa-trophy text-warning me-1"></i> Closed Win Rate</div>
-                    <div class="stat-value val-yellow">{win_rate}%</div>
+                    <div class="stat-value val-yellow" id="stat-win-rate">{win_rate}%</div>
                     <small class="text-muted">Break-even at 1:3 R:R is 25.0%</small>
                 </div>
             </div>
             <div class="col-12 col-md-3">
                 <div class="stat-card">
                     <div class="stat-title"><i class="fa-solid fa-check-double text-success me-1"></i> Total Wins</div>
-                    <div class="stat-value val-green">{wins}</div>
+                    <div class="stat-value val-green" id="stat-wins">{wins}</div>
                     <small class="text-muted">Scaled Exits (+3.0R TP3 & Locked +1.5R)</small>
                 </div>
             </div>
             <div class="col-12 col-md-3">
                 <div class="stat-card">
                     <div class="stat-title"><i class="fa-solid fa-xmark text-danger me-1"></i> Losses (SL Hit)</div>
-                    <div class="stat-value val-red">{losses}</div>
+                    <div class="stat-value val-red" id="stat-losses">{losses}</div>
                     <small class="text-muted">Controlled Structural Risk (-1.0R)</small>
                 </div>
             </div>
             <div class="col-12 col-md-3">
                 <div class="stat-card">
                     <div class="stat-title"><i class="fa-solid fa-scale-balanced text-info me-1"></i> Net Return (R)</div>
-                    <div class="stat-value text-info">+{net_r} R</div>
+                    <div class="stat-value text-info" id="stat-net-r">{'+' if net_r >= 0 else ''}{net_r} R</div>
                     <small class="text-muted">Cumulative Multiple Gain</small>
                 </div>
             </div>
@@ -2186,6 +2191,28 @@ def generate_html_dashboard(data, output_path):
                     `;
                     watchlistBody.appendChild(tr);
                 }});
+            }}
+
+            // Render History Metrics Cards
+            if (data.history) {{
+                const hist = data.history;
+                const winRateEl = document.getElementById('stat-win-rate');
+                if (winRateEl && hist.win_rate_pct !== undefined) {{
+                    winRateEl.innerText = `${{hist.win_rate_pct.toFixed(1)}}%`;
+                }}
+                const winsEl = document.getElementById('stat-wins');
+                if (winsEl && hist.wins !== undefined) {{
+                    winsEl.innerText = hist.wins;
+                }}
+                const lossesEl = document.getElementById('stat-losses');
+                if (lossesEl && hist.losses !== undefined) {{
+                    lossesEl.innerText = hist.losses;
+                }}
+                const netREl = document.getElementById('stat-net-r');
+                if (netREl && hist.net_pnl_r !== undefined) {{
+                    const sign = hist.net_pnl_r >= 0 ? '+' : '';
+                    netREl.innerText = `${{sign}}${{hist.net_pnl_r.toFixed(1)}} R`;
+                }}
             }}
 
             // Render Binance Account
