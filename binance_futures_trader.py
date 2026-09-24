@@ -217,6 +217,24 @@ class BinanceFuturesTrader:
             print(f"[!] Exception setting leverage for {symbol}: {e}")
         return False
 
+    def get_all_open_positions(self):
+        """Check all currently open positions on Binance Futures"""
+        if not self.is_configured():
+            return []
+        try:
+            params = self._sign_request()
+            resp = self.session.get(f"{BASE_URL}/fapi/v2/positionRisk", params=params, timeout=8)
+            if resp.status_code == 200:
+                open_symbols = []
+                for p in resp.json():
+                    amt = float(p.get("positionAmt", 0.0))
+                    if abs(amt) > 0:
+                        open_symbols.append(p.get("symbol"))
+                return open_symbols
+        except Exception as e:
+            print(f"[!] Error fetching positionRisk for all symbols: {e}")
+        return []
+
     def get_open_position(self, symbol):
         """Check if an open position already exists on Binance"""
         try:

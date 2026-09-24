@@ -1284,7 +1284,11 @@ def record_new_signals_to_history(actionable_signals, history_data, open_symbols
     today_str = datetime.now().strftime('%Y-%m-%d')
     existing_keys = {f"{s['symbol']}_{s['date']}_{s['type']}" for s in existing_signals}
 
-    active_positions_count = len([s for s in existing_signals if s.get("status") in ["OPEN", "TP1_BE_RUNNING", "TP2_LOCKED_RUNNING"]])
+    if auto_trader and auto_trader.is_live_enabled():
+        real_open = auto_trader.get_all_open_positions()
+        active_positions_count = len(real_open)
+    else:
+        active_positions_count = len([s for s in existing_signals if s.get("status") in ["OPEN", "TP1_BE_RUNNING", "TP2_LOCKED_RUNNING"]])
     circuit_breaker = history_data.get("circuit_breaker", {})
     is_circuit_tripped = circuit_breaker.get("is_tripped", False)
 
