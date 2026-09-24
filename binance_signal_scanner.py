@@ -15,6 +15,7 @@ LIMIT_EXPIRY_HOURS = 24       # Pending limit orders expire if unfilled after 24
 FEE_BUFFER_PCT = 0.002        # 0.2% round-trip exchange fee buffer for True Break-Even
 
 BINANCE_BASES = [
+    "https://fapi.binance.com/fapi/v1",
     "https://data-api.binance.vision/api/v3",
     "https://api.binance.com/api/v3",
     "https://api1.binance.com/api/v3",

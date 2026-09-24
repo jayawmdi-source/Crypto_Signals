@@ -337,6 +337,20 @@ class BinanceFuturesTrader:
         sl_price = float(sig.get("raw_sl") or sig.get("sl", 0))
         tp_price = float(sig.get("raw_tp") or sig.get("tp", 0))
 
+        # Always fetch live Futures market price to avoid any Spot vs Futures redenomination discrepancies
+        try:
+            ticker_resp = self.session.get(f"{BASE_URL}/fapi/v1/ticker/price", params={"symbol": symbol}, timeout=5)
+            if ticker_resp.status_code == 200:
+                live_price = float(ticker_resp.json().get("price", 0))
+                if live_price > 0:
+                    if entry_price > 0 and abs(live_price - entry_price) / entry_price > 0.2:
+                        scale = live_price / entry_price
+                        sl_price *= scale
+                        tp_price *= scale
+                    entry_price = live_price
+        except Exception:
+            pass
+
         if entry_price <= 0 or sl_price <= 0:
             print(f"[!] Auto-Trader: Invalid entry/SL prices for {symbol}.")
             return None
