@@ -1493,7 +1493,7 @@ def scan_all_pairs():
     print("=" * 95)
 
     results = []
-    with ThreadPoolExecutor(max_workers=12) as executor:
+    with ThreadPoolExecutor(max_workers=4) as executor:
         futures = {executor.submit(analyze_symbol, p, open_signals_map.get(p), btc_sentiment, session_info): p for p in pairs}
         for future in futures:
             res = future.result()
