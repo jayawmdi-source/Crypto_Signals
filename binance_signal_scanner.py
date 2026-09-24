@@ -1545,6 +1545,11 @@ def scan_all_pairs():
     if auto_trader and auto_trader.is_configured():
         account_info = auto_trader.get_account_balances()
         real_positions = auto_trader.get_open_positions_detail()
+        if account_info:
+            tot_pnl = sum(p.get("unrealized_pnl", 0.0) for p in real_positions)
+            wb = account_info.get("wallet_balance", 0.0)
+            account_info["unrealized_pnl"] = round(tot_pnl, 4)
+            account_info["equity"] = round(wb + tot_pnl, 2)
 
     payload = {
         "updated_at": datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
@@ -1590,8 +1595,16 @@ def generate_html_dashboard(data, output_path):
     binance_account = data.get("binance_account") or {}
     wallet_bal = binance_account.get("wallet_balance")
     avail_margin = binance_account.get("available_balance")
+    equity = binance_account.get("equity", wallet_bal)
+    tot_unrealized = binance_account.get("unrealized_pnl", 0.0)
+    
+    equity_str = f"${equity:,.2f} USDT" if equity is not None else "--"
     wallet_bal_str = f"${wallet_bal:,.2f} USDT" if wallet_bal is not None else "--"
     avail_margin_str = f"${avail_margin:,.2f} USDT" if avail_margin is not None else "--"
+    
+    pnl_sign = "+" if tot_unrealized >= 0 else ""
+    pnl_color = "text-success" if tot_unrealized >= 0 else "text-danger"
+    floating_badge = f'<span class="{pnl_color} fw-bold ms-1" id="binance-floating-pnl">({pnl_sign}${tot_unrealized:,.2f} Floating)</span>' if tot_unrealized != 0 else '<span class="text-muted ms-1" id="binance-floating-pnl">(+$0.00)</span>'
 
     cb_html = f'<span class="badge bg-danger text-white"><i class="fa-solid fa-hand me-1"></i>🛑 CIRCUIT BREAKER TRIPPED ({cb_losses}/2 Losses)</span>' if cb_tripped else f'<span class="badge bg-success bg-opacity-25 text-success border border-success"><i class="fa-solid fa-shield-halved me-1"></i>DRAWDOWN SHIELD ACTIVE ({cb_losses}/2)</span>'
 
@@ -1811,9 +1824,9 @@ def generate_html_dashboard(data, output_path):
         <div class="row g-3 mb-4">
             <div class="col-12 col-md-3">
                 <div class="stat-card" style="border-left: 4px solid #f0b90b;">
-                    <div class="stat-title"><i class="fa-solid fa-wallet text-warning me-1"></i> Real Binance Futures Wallet</div>
-                    <div class="stat-value text-warning" id="binance-wallet-bal">{wallet_bal_str}</div>
-                    <small class="text-muted">Total USDT Balance on Binance</small>
+                    <div class="stat-title"><i class="fa-solid fa-wallet text-warning me-1"></i> Total Account Equity (Live)</div>
+                    <div class="stat-value text-warning" id="binance-wallet-bal">{equity_str}</div>
+                    <small class="text-muted">Realized: <span id="binance-realized-cash">{wallet_bal_str}</span> {floating_badge}</small>
                 </div>
             </div>
             <div class="col-12 col-md-3">
@@ -2222,8 +2235,23 @@ def generate_html_dashboard(data, output_path):
             if (data.binance_account) {{
                 const wb = document.getElementById('binance-wallet-bal');
                 const ab = document.getElementById('binance-avail-margin');
-                if (wb && data.binance_account.wallet_balance !== undefined) {{
-                    wb.innerText = `$${{data.binance_account.wallet_balance.toLocaleString('en-US', {{minimumFractionDigits: 2, maximumFractionDigits: 2}})}} USDT`;
+                const rc = document.getElementById('binance-realized-cash');
+                const fp = document.getElementById('binance-floating-pnl');
+                
+                const pnl = data.binance_account.unrealized_pnl || 0.0;
+                const eq = data.binance_account.equity !== undefined ? data.binance_account.equity : data.binance_account.wallet_balance;
+                const cash = data.binance_account.wallet_balance;
+
+                if (wb && eq !== undefined) {{
+                    wb.innerText = `$${{eq.toLocaleString('en-US', {{minimumFractionDigits: 2, maximumFractionDigits: 2}})}} USDT`;
+                }}
+                if (rc && cash !== undefined) {{
+                    rc.innerText = `$${{cash.toLocaleString('en-US', {{minimumFractionDigits: 2, maximumFractionDigits: 2}})}} USDT`;
+                }}
+                if (fp && pnl !== undefined) {{
+                    const sign = pnl >= 0 ? '+' : '';
+                    fp.innerText = `(${{sign}}$${{pnl.toFixed(2)}} Floating)`;
+                    fp.className = pnl >= 0 ? "text-success fw-bold ms-1" : "text-danger fw-bold ms-1";
                 }}
                 if (ab && data.binance_account.available_balance !== undefined) {{
                     ab.innerText = `$${{data.binance_account.available_balance.toLocaleString('en-US', {{minimumFractionDigits: 2, maximumFractionDigits: 2}})}} USDT`;
