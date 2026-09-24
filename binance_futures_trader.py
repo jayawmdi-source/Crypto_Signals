@@ -354,16 +354,22 @@ class BinanceFuturesTrader:
             return None
 
         avail_usdt = balances.get("available_balance", 0.0)
-        if avail_usdt < 5.0:
-            print(f"[!] Auto-Trader: Insufficient available balance (${avail_usdt:.2f} USDT). Minimum $5.00 required.")
+        wallet_usdt = balances.get("wallet_balance", avail_usdt)
+        
+        # Effective base balance: strictly the smaller of available or wallet USDT
+        # This prevents Multi-Assets Mode or portfolio margin from inflating position size
+        base_bal = min(avail_usdt, wallet_usdt) if wallet_usdt > 0 else avail_usdt
+        
+        if base_bal < 3.0:
+            print(f"[!] Auto-Trader: Insufficient balance (${base_bal:.2f} USDT). Minimum $3.00 required.")
             return None
 
         # 3. Enforce ISOLATED margin and leverage FIRST before calculating sizes
         self.set_margin_type_isolated(symbol)
         self.set_leverage(symbol, self.leverage)
 
-        # Calculate Position Margin: strictly 10% of Available USDT balance
-        margin_allocated = avail_usdt * (self.position_size_pct / 100.0)
+        # Calculate Position Margin: strictly 10% of base balance (e.g. 10% of $43.32 = $4.33 USDT)
+        margin_allocated = base_bal * (self.position_size_pct / 100.0)
         notional_value = margin_allocated * self.leverage
         raw_qty = notional_value / entry_price
 
