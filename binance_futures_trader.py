@@ -322,7 +322,12 @@ class BinanceFuturesTrader:
             signed = self._sign_request(params)
             resp = self.session.get(f"{BASE_URL}/fapi/v1/openAlgoOrders", params=signed, timeout=6)
             if resp.status_code == 200:
-                return resp.json()
+                res = resp.json()
+                if isinstance(res, list):
+                    return res
+                if isinstance(res, dict) and "orders" in res:
+                    return res.get("orders", [])
+                return []
         except Exception as e:
             print(f"[!] Error fetching openAlgoOrders: {e}")
         return []

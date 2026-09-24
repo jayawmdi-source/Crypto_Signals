@@ -1315,13 +1315,13 @@ def check_and_resolve_open_trades():
     # Ensure physical Stop Loss & TP protection on Binance for all active positions
     if auto_trader and auto_trader.is_live_enabled():
         try:
-            real_positions = auto_trader.get_all_open_positions()
+            real_positions = auto_trader.get_open_positions_detail()
             for rp in real_positions:
                 rp_sym = rp.get("symbol")
-                rp_amt = float(rp.get("position_amount", 0.0))
+                rp_amt = float(rp.get("position_amt", 0.0))
                 if rp_amt == 0:
                     continue
-                rp_is_long = rp_amt > 0
+                rp_is_long = "BUY" in rp.get("side", "") or "LONG" in rp.get("side", "")
                 matching = [s for s in existing_signals if s.get("symbol") == rp_sym and s.get("status") in ["OPEN", "TP1_BE_RUNNING", "TP2_LOCKED_RUNNING"]]
                 if matching:
                     m_sig = matching[0]
