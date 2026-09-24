@@ -358,7 +358,11 @@ class BinanceFuturesTrader:
             print(f"[!] Auto-Trader: Insufficient available balance (${avail_usdt:.2f} USDT). Minimum $5.00 required.")
             return None
 
-        # Calculate 10% Position Margin
+        # 3. Enforce ISOLATED margin and leverage FIRST before calculating sizes
+        self.set_margin_type_isolated(symbol)
+        self.set_leverage(symbol, self.leverage)
+
+        # Calculate Position Margin: strictly 10% of Available USDT balance
         margin_allocated = avail_usdt * (self.position_size_pct / 100.0)
         notional_value = margin_allocated * self.leverage
         raw_qty = notional_value / entry_price
@@ -387,10 +391,6 @@ class BinanceFuturesTrader:
             print(f"[!] Auto-Trader: Notional value ${final_notional:.2f} is below minNotional ${rules['min_notional']:.2f}.")
             return None
 
-        # 3. Enforce ISOLATED margin and 10x leverage
-        self.set_margin_type_isolated(symbol)
-        self.set_leverage(symbol, self.leverage)
-
         # 4. Place MARKET Entry Order
         entry_params = self._sign_request({
             "symbol": symbol,
@@ -411,25 +411,49 @@ class BinanceFuturesTrader:
             avg_price = float(order_result.get("avgPrice") or entry_price)
             print(f"[✅] {symbol} FILLED @ ${avg_price:.6f} | Order ID: {order_result.get('orderId')}")
 
-            # 5. Instantly place Hardware STOP_MARKET Order via Algo Order API
-            sl_params = self._sign_request({
-                "algoType": "CONDITIONAL",
-                "symbol": symbol,
-                "side": exit_side,
-                "positionSide": pos_side,
-                "type": "STOP_MARKET",
-                "triggerPrice": sl_formatted,
-                "closePosition": "true",
-                "workingType": "MARK_PRICE"
-            })
-            sl_resp = self.session.post(f"{BASE_URL}/fapi/v1/algoOrder", data=sl_params, timeout=10)
+            # 5. Instantly place Hardware STOP_MARKET Order directly on Binance Matching Engine
             sl_order_id = None
-            if sl_resp.status_code == 200:
-                sl_res = sl_resp.json()
-                sl_order_id = sl_res.get("algoId") or sl_res.get("orderId")
-                print(f"[🛡️] {symbol} STOP_MARKET placed @ ${sl_formatted} (Algo ID: {sl_order_id})")
-            else:
-                print(f"[!] WARNING: Failed to place STOP_MARKET for {symbol}: {sl_resp.text}")
+            try:
+                sl_params = self._sign_request({
+                    "symbol": symbol,
+                    "side": exit_side,
+                    "positionSide": pos_side,
+                    "type": "STOP_MARKET",
+                    "stopPrice": sl_formatted,
+                    "closePosition": "true",
+                    "workingType": "MARK_PRICE"
+                })
+                sl_resp = self.session.post(f"{BASE_URL}/fapi/v1/order", data=sl_params, timeout=10)
+                if sl_resp.status_code == 200:
+                    sl_res = sl_resp.json()
+                    sl_order_id = sl_res.get("orderId")
+                    print(f"[🛡️] {symbol} STOP_MARKET placed @ ${sl_formatted} (Order ID: {sl_order_id})")
+                else:
+                    print(f"[!] WARNING: Failed to place STOP_MARKET for {symbol}: {sl_resp.text}")
+            except Exception as e_sl:
+                print(f"[!] Exception placing STOP_MARKET for {symbol}: {e_sl}")
+
+            # 6. Instantly place Hardware TAKE_PROFIT_MARKET Order directly on Binance Matching Engine
+            tp_order_id = None
+            try:
+                tp_params = self._sign_request({
+                    "symbol": symbol,
+                    "side": exit_side,
+                    "positionSide": pos_side,
+                    "type": "TAKE_PROFIT_MARKET",
+                    "stopPrice": tp_formatted,
+                    "closePosition": "true",
+                    "workingType": "MARK_PRICE"
+                })
+                tp_resp = self.session.post(f"{BASE_URL}/fapi/v1/order", data=tp_params, timeout=10)
+                if tp_resp.status_code == 200:
+                    tp_res = tp_resp.json()
+                    tp_order_id = tp_res.get("orderId")
+                    print(f"[🎯] {symbol} TAKE_PROFIT_MARKET placed @ ${tp_formatted} (Order ID: {tp_order_id})")
+                else:
+                    print(f"[!] Note: Could not place TAKE_PROFIT_MARKET on Binance: {tp_resp.text}")
+            except Exception as e_tp:
+                print(f"[!] Exception placing TAKE_PROFIT_MARKET for {symbol}: {e_tp}")
 
             execution_summary = {
                 "symbol": symbol,
@@ -443,6 +467,7 @@ class BinanceFuturesTrader:
                 "tp1_price": tp1_formatted,
                 "tp2_price": tp2_formatted,
                 "tp_price": tp_formatted,
+                "tp_order_id": tp_order_id,
                 "order_id": order_result.get("orderId"),
                 "status": "FILLED"
             }
@@ -465,22 +490,21 @@ class BinanceFuturesTrader:
         pos_side = ("LONG" if is_long else "SHORT") if self.is_hedge_mode else "BOTH"
 
         try:
-            # Cancel existing open algo orders
-            cancel_algo = self._sign_request({"symbol": symbol})
-            self.session.delete(f"{BASE_URL}/fapi/v1/algoOpenOrders", data=cancel_algo, timeout=8)
+            # Cancel existing open conditional orders
+            cancel_params = self._sign_request({"symbol": symbol})
+            self.session.delete(f"{BASE_URL}/fapi/v1/allOpenOrders", data=cancel_params, timeout=8)
             
-            # Place new STOP_MARKET via algoOrder
+            # Place new trailed STOP_MARKET directly on Binance
             sl_params = self._sign_request({
-                "algoType": "CONDITIONAL",
                 "symbol": symbol,
                 "side": exit_side,
                 "positionSide": pos_side,
                 "type": "STOP_MARKET",
-                "triggerPrice": sl_formatted,
+                "stopPrice": sl_formatted,
                 "closePosition": "true",
                 "workingType": "MARK_PRICE"
             })
-            resp = self.session.post(f"{BASE_URL}/fapi/v1/algoOrder", data=sl_params, timeout=8)
+            resp = self.session.post(f"{BASE_URL}/fapi/v1/order", data=sl_params, timeout=8)
             if resp.status_code == 200:
                 print(f"[🔒] {symbol}: Stop Loss trailed to ${sl_formatted}")
                 return True
@@ -530,11 +554,11 @@ class BinanceFuturesTrader:
             resp = self.session.post(f"{BASE_URL}/fapi/v1/order", data=params, timeout=8)
             if resp.status_code == 200:
                 print(f"[💰] {symbol}: Partial/Full Close ({fraction*100:.0f}%) executed: {qty_to_close}")
-                # If closing 100%, also cancel open algo orders
+                # If closing 100%, also cancel open orders
                 if fraction >= 0.95:
                     try:
                         c_params = self._sign_request({"symbol": symbol})
-                        self.session.delete(f"{BASE_URL}/fapi/v1/algoOpenOrders", data=c_params, timeout=5)
+                        self.session.delete(f"{BASE_URL}/fapi/v1/allOpenOrders", data=c_params, timeout=5)
                     except Exception:
                         pass
                 return True
