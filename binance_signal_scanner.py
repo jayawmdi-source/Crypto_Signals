@@ -1312,6 +1312,30 @@ def check_and_resolve_open_trades():
                             s["notified_tp1"] = True
                             send_telegram_resolution(s, "WIN_TP1")
 
+    # Ensure physical Stop Loss & TP protection on Binance for all active positions
+    if auto_trader and auto_trader.is_live_enabled():
+        try:
+            real_positions = auto_trader.get_all_open_positions()
+            for rp in real_positions:
+                rp_sym = rp.get("symbol")
+                rp_amt = float(rp.get("position_amount", 0.0))
+                if rp_amt == 0:
+                    continue
+                rp_is_long = rp_amt > 0
+                matching = [s for s in existing_signals if s.get("symbol") == rp_sym and s.get("status") in ["OPEN", "TP1_BE_RUNNING", "TP2_LOCKED_RUNNING"]]
+                if matching:
+                    m_sig = matching[0]
+                    m_sl = m_sig.get("trailing_sl") or m_sig.get("sl", 0)
+                    m_tp = m_sig.get("tp", 0)
+                    auto_trader.ensure_position_protection(rp_sym, rp_is_long, m_sl, m_tp, abs(rp_amt))
+                else:
+                    entry_p = float(rp.get("entry_price", 0.0))
+                    if entry_p > 0:
+                        safe_sl = entry_p * 0.96 if rp_is_long else entry_p * 1.04
+                        auto_trader.ensure_position_protection(rp_sym, rp_is_long, safe_sl, None, abs(rp_amt))
+        except Exception as e_prot:
+            print(f"[!] Protection auto-shield sync error: {e_prot}")
+
     recalculate_history_stats(history_data)
     with open(HISTORY_FILE, "w", encoding="utf-8") as f:
         json.dump(history_data, f, indent=2)
@@ -1385,6 +1409,7 @@ def record_new_signals_to_history(actionable_signals, history_data, open_symbols
         # Fresh signal
         key = f"{sym}_{today_str}_{sig_type}"
         if key not in existing_keys:
+            act["type"] = sig_type
             is_limit = bool(act.get("limit_setup"))
             initial_status = "PENDING_LIMIT" if is_limit else "OPEN"
             initial_sl = act["raw_sl"]
