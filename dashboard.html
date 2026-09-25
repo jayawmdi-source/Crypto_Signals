@@ -7,6 +7,10 @@
     <meta http-equiv="Pragma" content="no-cache">
     <meta http-equiv="Expires" content="0">
     <title>DMD SMC Pro 2.0 - Institutional Live Scanner</title>
+    <link rel="preconnect" href="https://cdn.jsdelivr.net">
+    <link rel="preconnect" href="https://cdnjs.cloudflare.com">
+    <link rel="dns-prefetch" href="https://data-api.binance.vision">
+    <link rel="dns-prefetch" href="https://api.binance.com">
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
     <style>
@@ -6830,17 +6834,22 @@
             }
         }
 
-        // Live Price Polling from Binance API every 4 seconds
+        // Live Price Polling from Binance API every 4 seconds (Non-blocking with 2.5s Timeout)
         async function fetchLivePrices() {
             try {
                 let resp;
+                const controller = new AbortController();
+                const timeoutId = setTimeout(() => controller.abort(), 2500);
                 try {
-                    resp = await fetch('https://data-api.binance.vision/api/v3/ticker/price');
+                    resp = await fetch('https://data-api.binance.vision/api/v3/ticker/price', { signal: controller.signal });
                 } catch (e) {}
                 if (!resp || !resp.ok) {
-                    resp = await fetch('https://api.binance.com/api/v3/ticker/price');
+                    try {
+                        resp = await fetch('https://api.binance.com/api/v3/ticker/price', { signal: controller.signal });
+                    } catch (e) {}
                 }
-                if (!resp.ok) return;
+                clearTimeout(timeoutId);
+                if (!resp || !resp.ok) return;
                 const tickerList = await resp.json();
                 const priceMap = {};
                 tickerList.forEach(t => priceMap[t.symbol] = parseFloat(t.price));
@@ -6989,11 +6998,14 @@
             async function reloadDashboardData() {
                 try {
                     let res;
+                    const ctrl = new AbortController();
+                    const tid = setTimeout(() => ctrl.abort(), 3500);
                     try {
-                        res = await fetch('latest_signals.json?t=' + Date.now());
+                        res = await fetch('latest_signals.json?t=' + Date.now(), { signal: ctrl.signal });
                     } catch(e) {
-                        res = await fetch('/latest_signals.json?t=' + Date.now());
+                        res = await fetch('/latest_signals.json?t=' + Date.now(), { signal: ctrl.signal });
                     }
+                    clearTimeout(tid);
                     if (res && res.ok) {
                         const freshData = await res.json();
                         if (freshData && (freshData.active_signals || freshData.real_positions)) {

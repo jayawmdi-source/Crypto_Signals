@@ -1,0 +1,42 @@
+# =============================================================================
+# Apache Security Configuration for Binance SMC Pro 2.0
+# Prevents unauthorized access to sensitive configurations, keys, and scripts
+# =============================================================================
+
+# Disable directory listing
+Options -Indexes
+
+# Deny access to hidden files (.env, .git, .sessions.json, etc.)
+<FilesMatch "^\.">
+    Require all denied
+</FilesMatch>
+
+# Specifically protect sensitive configuration and credential files
+<FilesMatch "(binance_api_config\.json|telegram_config\.json|trade_history\.json|\.sessions\.json|\.env.*|\.key|\.zip|\.py|\.sh|\.bat)$">
+    Require all denied
+</FilesMatch>
+
+# Only allow public access to dashboard frontend assets
+<FilesMatch "^(dashboard\.html|index\.html|latest_signals\.json)$">
+    Require all granted
+</FilesMatch>
+
+# Extra protection for credentials directory
+<IfModule mod_rewrite.c>
+    RewriteEngine On
+    RewriteRule ^vps_credentials/.*$ - [F,L]
+    RewriteRule ^mingit/.*$ - [F,L]
+</IfModule>
+
+# Security Headers
+<IfModule mod_headers.c>
+    Header set X-Content-Type-Options "nosniff"
+    Header set X-Frame-Options "SAMEORIGIN"
+    Header set X-XSS-Protection "1; mode=block"
+    Header set Referrer-Policy "strict-origin-when-cross-origin"
+</IfModule>
+
+# Ultra-Fast GZIP Compression
+<IfModule mod_deflate.c>
+    AddOutputFilterByType DEFLATE text/html text/plain text/xml text/css text/javascript application/javascript application/json
+</IfModule>

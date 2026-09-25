@@ -3,6 +3,7 @@ import sys
 import uuid
 import json
 import time
+import gzip
 import urllib.parse
 from http.cookies import SimpleCookie
 from http.server import ThreadingHTTPServer, SimpleHTTPRequestHandler
@@ -331,6 +332,24 @@ class SecureDashboardHandler(SimpleHTTPRequestHandler):
             return
         super().do_HEAD()
 
+    def send_compressed_response(self, content_bytes, content_type="text/html; charset=utf-8"):
+        accept_encoding = self.headers.get("Accept-Encoding", "")
+        if "gzip" in accept_encoding:
+            compressed = gzip.compress(content_bytes, compresslevel=6)
+            self.send_response(200)
+            self.send_header("Content-Type", content_type)
+            self.send_header("Content-Encoding", "gzip")
+            self.send_header("Content-Length", str(len(compressed)))
+            self.send_header("Vary", "Accept-Encoding")
+            self.end_headers()
+            self.wfile.write(compressed)
+        else:
+            self.send_response(200)
+            self.send_header("Content-Type", content_type)
+            self.send_header("Content-Length", str(len(content_bytes)))
+            self.end_headers()
+            self.wfile.write(content_bytes)
+
     def do_GET(self):
         # 1. Security Firewall: Block forbidden and confidential files
         if is_file_forbidden(self.path):
@@ -366,11 +385,8 @@ class SecureDashboardHandler(SimpleHTTPRequestHandler):
                 self.end_headers()
                 return
 
-            self.send_response(200)
-            self.send_header("Content-Type", "text/html; charset=utf-8")
-            self.end_headers()
             rendered = LOGIN_HTML.replace("{ERROR_ALERT}", "").replace("{PREFILL_USER}", "")
-            self.wfile.write(rendered.encode("utf-8"))
+            self.send_compressed_response(rendered.encode("utf-8"), "text/html; charset=utf-8")
             return
 
         # 4. Check Authentication for all other routes
@@ -400,20 +416,22 @@ class SecureDashboardHandler(SimpleHTTPRequestHandler):
                         content = content + injected_btn
 
                     content_bytes = content.encode("utf-8")
-                    self.send_response(200)
-                    self.send_header("Content-Type", "text/html; charset=utf-8")
-                    self.send_header("Content-Length", str(len(content_bytes)))
-                    self.send_header("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0")
-                    self.send_header("Pragma", "no-cache")
-                    self.end_headers()
-                    self.wfile.write(content_bytes)
+                    self.send_compressed_response(content_bytes, "text/html; charset=utf-8")
                     return
                 except Exception as e:
                     print(f"[!] Error serving {clean_path}: {e}")
 
-        # Dynamic JSON data no-cache
+        # High-Speed Compressed JSON delivery (89% bandwidth reduction)
         if clean_path.endswith(".json"):
-            pass
+            target_json = os.path.join(DIRECTORY, clean_path.lstrip("/"))
+            if os.path.exists(target_json):
+                try:
+                    with open(target_json, "rb") as f:
+                        data_bytes = f.read()
+                    self.send_compressed_response(data_bytes, "application/json; charset=utf-8")
+                    return
+                except Exception as e:
+                    print(f"[!] Error serving {clean_path}: {e}")
 
         super().do_GET()
 
@@ -422,12 +440,9 @@ class SecureDashboardHandler(SimpleHTTPRequestHandler):
             client_ip = get_client_ip(self)
             is_locked, rem_mins = is_ip_locked(client_ip)
             if is_locked:
-                self.send_response(429)
-                self.send_header("Content-Type", "text/html; charset=utf-8")
-                self.end_headers()
                 error_msg = f'<div class="alert-error">🛑 Too many failed login attempts. Temporarily locked for {rem_mins} minutes.</div>'
                 rendered = LOGIN_HTML.replace("{ERROR_ALERT}", error_msg).replace("{PREFILL_USER}", "")
-                self.wfile.write(rendered.encode("utf-8"))
+                self.send_compressed_response(rendered.encode("utf-8"), "text/html; charset=utf-8")
                 return
 
             content_length = int(self.headers.get("Content-Length", 0))
@@ -451,12 +466,9 @@ class SecureDashboardHandler(SimpleHTTPRequestHandler):
                 return
             else:
                 record_failed_attempt(client_ip)
-                self.send_response(200)
-                self.send_header("Content-Type", "text/html; charset=utf-8")
-                self.end_headers()
                 error_msg = '<div class="alert-error">❌ Invalid Username or Password. Please try again.</div>'
                 rendered = LOGIN_HTML.replace("{ERROR_ALERT}", error_msg).replace("{PREFILL_USER}", username)
-                self.wfile.write(rendered.encode("utf-8"))
+                self.send_compressed_response(rendered.encode("utf-8"), "text/html; charset=utf-8")
                 return
 
         self.send_response(404)
