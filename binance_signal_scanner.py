@@ -2000,6 +2000,26 @@ def generate_html_dashboard(data, output_path):
     else:
         cb_html = f'<span class="badge bg-success bg-opacity-25 text-success border border-success"><i class="fa-solid fa-shield-halved me-1"></i>ADAPTIVE SHIELD ACTIVE ({cb_losses}/3)</span>'
 
+    real_positions = data.get("real_positions") or []
+    pos_count = len(real_positions)
+    pos_count_text = f"{pos_count} Active" if pos_count > 0 else "0 Active (Protected)"
+    pos_badge_class = "badge bg-success ms-2" if pos_count > 0 else "badge bg-secondary ms-2"
+
+    active_signals = data.get("active_signals", [])
+    init_limit = 0
+    init_stopped = 0
+    init_running = 0
+    init_ready = 0
+    for sig in active_signals:
+        if sig.get("limit_setup"):
+            init_limit += 1
+        elif sig.get("action_status") == "STOPPED":
+            init_stopped += 1
+        elif sig.get("action_status") == "RUNNING":
+            init_running += 1
+        else:
+            init_ready += 1
+
     html_content = f"""<!DOCTYPE html>
 <html lang="en" data-bs-theme="dark">
 <head>
@@ -2307,7 +2327,7 @@ def generate_html_dashboard(data, output_path):
             <div class="d-flex align-items-center justify-content-between mb-2">
                 <h4 class="fw-bold mb-0 text-white">
                     <i class="fa-solid fa-chart-line text-success me-2"></i>Active DMD Positions (Live Execution)
-                    <span class="badge bg-success ms-2" id="live-pos-count-badge">0 Active</span>
+                    <span class="{pos_badge_class}" id="live-pos-count-badge">{pos_count_text}</span>
                 </h4>
                 <small class="text-muted">Live matching engine stream from DMD Futures</small>
             </div>
@@ -2363,16 +2383,16 @@ def generate_html_dashboard(data, output_path):
                     <i class="fa-solid fa-layer-group me-1"></i> All Setups (<span id="cnt-all">{data.get('active_count', 0)}</span>)
                 </button>
                 <button class="btn btn-sm btn-outline-success filter-tab-btn" id="btn-filter-ready" onclick="filterSignals('READY')">
-                    <i class="fa-solid fa-circle-check me-1"></i> 🟢 Ganna Puluwan (Ready) (<span id="cnt-ready">0</span>)
+                    <i class="fa-solid fa-circle-check me-1"></i> 🟢 Ganna Puluwan (Ready) (<span id="cnt-ready">{init_ready}</span>)
                 </button>
                 <button class="btn btn-sm btn-outline-warning filter-tab-btn" id="btn-filter-limit" onclick="filterSignals('LIMIT')">
-                    <i class="fa-solid fa-clock me-1"></i> 🟡 Pending Limit Retest (<span id="cnt-limit">0</span>)
+                    <i class="fa-solid fa-clock me-1"></i> 🟡 Pending Limit Retest (<span id="cnt-limit">{init_limit}</span>)
                 </button>
                 <button class="btn btn-sm btn-outline-info filter-tab-btn" id="btn-filter-running" onclick="filterSignals('RUNNING')">
-                    <i class="fa-solid fa-rocket me-1"></i> 🚀 Running In Profit (<span id="cnt-running">0</span>)
+                    <i class="fa-solid fa-rocket me-1"></i> 🚀 Setups Running in Profit (<span id="cnt-running">{init_running}</span>)
                 </button>
                 <button class="btn btn-sm btn-outline-danger filter-tab-btn" id="btn-filter-stopped" onclick="filterSignals('STOPPED')">
-                    <i class="fa-solid fa-triangle-exclamation me-1"></i> 🔴 SL Breached (<span id="cnt-stopped">0</span>)
+                    <i class="fa-solid fa-triangle-exclamation me-1"></i> 🔴 SL Breached (<span id="cnt-stopped">{init_stopped}</span>)
                 </button>
                 <button type="button" onclick="scrollToHistory()" class="btn btn-sm btn-outline-secondary filter-tab-btn">
                     <i class="fa-solid fa-clock-rotate-left me-1"></i> 🛑 Closed History (<span id="cnt-expired">{losses + wins}</span>)
@@ -2450,6 +2470,11 @@ def generate_html_dashboard(data, output_path):
             const container = document.getElementById('signals-container');
             if (!container) return;
             container.innerHTML = "";
+
+            let cReady = 0;
+            let cLimit = 0;
+            let cRunning = 0;
+            let cStopped = 0;
 
             if (active.length === 0) {{
                 container.innerHTML = `
@@ -2548,6 +2573,10 @@ def generate_html_dashboard(data, output_path):
                         initialDesc = `<span class="text-warning fw-bold">${{sig.action_label || 'Price Near SL'}}</span>`;
                     }}
                     col.setAttribute('data-category', initialCat);
+                    if (initialCat === 'LIMIT') cLimit++;
+                    else if (initialCat === 'STOPPED') cStopped++;
+                    else if (initialCat === 'RUNNING') cRunning++;
+                    else cReady++;
 
                     col.innerHTML = `
                         <div class="signal-card ${{cardClass}}">
@@ -2639,6 +2668,17 @@ def generate_html_dashboard(data, output_path):
                     container.appendChild(col);
                 }});
             }}
+
+            const elAll = document.getElementById('cnt-all');
+            const elReady = document.getElementById('cnt-ready');
+            const elLimit = document.getElementById('cnt-limit');
+            const elRunning = document.getElementById('cnt-running');
+            const elStopped = document.getElementById('cnt-stopped');
+            if (elAll) elAll.innerText = active.length;
+            if (elReady) elReady.innerText = cReady;
+            if (elLimit) elLimit.innerText = cLimit;
+            if (elRunning) elRunning.innerText = cRunning;
+            if (elStopped) elStopped.innerText = cStopped;
 
             // Render Watchlist
             const watchlistBody = document.getElementById('watchlist-body');
@@ -2833,7 +2873,7 @@ def generate_html_dashboard(data, output_path):
             const cols = document.querySelectorAll('.signal-col');
             cols.forEach(col => {{
                 const cCat = col.getAttribute('data-category');
-                if (cat === 'ALL' || cCat === cat) {{
+                if (cat === 'ALL' || cCat === cat || (cat === 'READY' && cCat === 'WARNING')) {{
                     col.style.display = 'block';
                 }} else {{
                     col.style.display = 'none';
@@ -2962,6 +3002,7 @@ def generate_html_dashboard(data, output_path):
                             descHtml = `<span class="text-success fw-bold">In Entry Zone (${{rawDiffPct >= 0 ? '+' : ''}}${{rawDiffPct.toFixed(2)}}%)</span>`;
                         }} else {{
                             cat = "WARNING";
+                            countReady++;
                             barBorder = "#f0b90b";
                             badgeHtml = '<span class="badge bg-warning text-dark py-1 px-2"><i class="fa-solid fa-triangle-exclamation me-1"></i>🟡 NEAR SL / CAUTION</span>';
                             descHtml = `<span class="text-warning fw-bold">Out of Entry Zone (${{rawDiffPct >= 0 ? '+' : ''}}${{rawDiffPct.toFixed(2)}}%)</span>`;
@@ -2976,7 +3017,7 @@ def generate_html_dashboard(data, output_path):
                         const colEl = document.getElementById(`card-col-${{sig.symbol}}`);
                         if (colEl) {{
                             colEl.setAttribute('data-category', cat);
-                            if (currentFilter === 'ALL' || currentFilter === cat) {{
+                            if (currentFilter === 'ALL' || currentFilter === cat || (currentFilter === 'READY' && cat === 'WARNING')) {{
                                 colEl.style.display = 'block';
                             }} else {{
                                 colEl.style.display = 'none';
