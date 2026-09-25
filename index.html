@@ -45,6 +45,18 @@
             padding: 16px 20px;
             box-shadow: 0 4px 20px rgba(0, 0, 0, 0.4);
         }
+        .position-card {
+            background-color: #121824 !important;
+            border: 1px solid #1e293b !important;
+            border-radius: 10px;
+            padding: 12px 14px;
+            box-shadow: 0 4px 15px rgba(0, 0, 0, 0.35);
+            transition: transform 0.15s ease, border-color 0.15s ease;
+        }
+        .position-card:hover {
+            transform: translateY(-2px);
+            border-color: #334155 !important;
+        }
         .signal-card {
             background-color: #121824 !important;
             border: 1px solid #1e293b !important;
@@ -6709,34 +6721,35 @@
                     `;
                 } else {
                     const row = document.createElement('div');
-                    row.className = "row g-3";
+                    row.className = "row g-2";
                     realPositions.forEach(p => {
                         const isLong = p.side.includes("LONG") || p.side.includes("BUY");
                         const pnlColor = p.unrealized_pnl >= 0 ? "val-green" : "val-red";
                         const pnlSign = p.unrealized_pnl >= 0 ? "+" : "";
                         const card = document.createElement('div');
-                        card.className = "col-12 col-md-6 col-lg-4";
+                        card.className = "col-12 col-sm-6 col-lg-3";
                         card.innerHTML = `
-                            <div class="stat-card" style="border-top: 4px solid ${isLong ? '#0ecb81' : '#f6465d'};">
-                                <div class="d-flex justify-content-between align-items-center mb-2">
-                                    <span class="fw-bold text-white fs-5">${p.symbol}</span>
-                                    <span class="badge ${isLong ? 'bg-success' : 'bg-danger'}">${p.side} ${p.leverage}x</span>
+                            <div class="position-card" style="border-top: 4px solid ${isLong ? '#0ecb81' : '#f6465d'};">
+                                <div class="d-flex justify-content-between align-items-center mb-1 pb-1 border-bottom border-secondary border-opacity-25">
+                                    <span class="fw-bold text-white fs-6">${p.symbol}</span>
+                                    <span class="badge ${isLong ? 'bg-success' : 'bg-danger'}" style="font-size: 0.70rem; padding: 2px 6px;">${p.side} ${p.leverage}x</span>
                                 </div>
-                                <div class="d-flex justify-content-between py-1 border-bottom border-secondary border-opacity-25 small">
-                                    <span class="pos-label">Entry / Mark:</span>
-                                    <span class="text-white fw-bold">$${p.entry_price.toLocaleString()} / $${p.mark_price.toLocaleString()}</span>
+                                <div class="d-flex justify-content-between py-1 border-bottom border-secondary border-opacity-10" style="font-size: 0.74rem;">
+                                    <span class="pos-label text-muted">Entry / Mark:</span>
+                                    <span class="text-white fw-semibold">$${p.entry_price.toLocaleString()} / $${p.mark_price.toLocaleString()}</span>
                                 </div>
-                                <div class="d-flex justify-content-between py-1 border-bottom border-secondary border-opacity-25 small">
-                                    <span class="pos-label">Isolated Margin:</span>
-                                    <span class="text-warning fw-bold">$${p.isolated_margin.toFixed(2)} USDT (${p.position_amt})</span>
+                                <div class="d-flex justify-content-between py-1 border-bottom border-secondary border-opacity-10" style="font-size: 0.74rem;">
+                                    <span class="pos-label text-muted">Isolated Margin:</span>
+                                    <span class="text-warning fw-semibold">$${p.isolated_margin.toFixed(2)} USDT (${p.position_amt})</span>
                                 </div>
-                                <div class="d-flex justify-content-between py-1 border-bottom border-secondary border-opacity-25 small">
-                                    <span class="pos-label">Unrealized PnL:</span>
+                                <div class="d-flex justify-content-between py-1 border-bottom border-secondary border-opacity-10" style="font-size: 0.74rem;">
+                                    <span class="pos-label text-muted">Unrealized PnL:</span>
                                     <span class="fw-bold ${pnlColor}">${pnlSign}$${p.unrealized_pnl.toFixed(4)} USDT (${pnlSign}${p.pnl_pct.toFixed(2)}%)</span>
                                 </div>
                                 <div class="mt-2 text-center">
-                                    <span class="badge bg-dark border border-success text-success" style="font-size: 0.72rem;">
-                                        <i class="fa-solid fa-shield-halved me-1"></i>Hardware Stop Loss Active on DMD
+                                    <span class="badge bg-dark bg-opacity-75 border border-success text-success d-inline-flex align-items-center gap-1" style="font-size: 0.68rem; padding: 2px 8px; font-weight: 500;">
+                                        <i class="fa-solid fa-shield-halved" style="font-size: 0.65rem;"></i>
+                                        <span>Hardware Stop Loss Active on DMD</span>
                                     </span>
                                 </div>
                             </div>
