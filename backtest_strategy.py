@@ -132,16 +132,25 @@ def backtest_symbol_smc(symbol):
         # RSI check
         curr_rsi = calculate_rsi(closes[max(0, i-30):i+1], 14)
 
+        # VSA Volume Check (>= 1.30x SMA20)
+        vols = [float(k[5]) for k in klines_1h[max(0, i-25):i+1]]
+        vol_sma = sum(vols[:-1]) / len(vols[:-1]) if len(vols) > 1 else 1.0
+        v_ratio = vols[-1] / vol_sma if vol_sma > 0 else 1.0
+
+        # Prime Session Check (Hour 7.0 to 20.0 UTC)
+        hour_utc = int(timestamps[i] // 3600000) % 24
+        is_prime = (7 <= hour_utc <= 20)
+
         trade = None
 
         # BUY SETUP:
-        # Strict SMC: Bullish Trend + (Liquidity Sweep OR Active FVG) + Healthy RSI
-        if (curr_e20 > curr_e50) and (has_bull_sweep or is_bull_fvg) and (30 <= curr_rsi <= 68):
+        # Strict SMC: Bullish Trend + Liquidity Sweep + Active FVG/Demand + VSA Volume + Prime Session
+        if (curr_e20 > curr_e50) and (has_bull_sweep or is_bull_fvg) and (35 <= curr_rsi <= 65) and is_prime and (v_ratio >= 1.25):
             local_low = min(lows[max(0, i-3):i+1])
             entry = curr_p
-            sl = local_low - (0.6 * curr_atr)
+            sl = local_low - (1.0 * curr_atr)
             risk = entry - sl
-            if 0.010 <= (risk / entry) <= 0.065:
+            if 0.008 <= (risk / entry) <= 0.055:
                 tp1 = entry + (risk * 1.5)
                 tp2 = entry + (risk * 2.0)
                 tp3 = entry + (risk * 3.0)
@@ -162,11 +171,11 @@ def backtest_symbol_smc(symbol):
                 }
 
         # SELL SETUP:
-        # Strict SMC: Bearish Trend + (Liquidity Sweep OR Active FVG) + Healthy RSI
-        elif (curr_e20 < curr_e50) and (has_bear_sweep or is_bear_fvg) and (32 <= curr_rsi <= 70):
+        # Strict SMC: Bearish Trend + Liquidity Sweep + Active FVG/Supply + VSA Volume + Prime Session
+        elif (curr_e20 < curr_e50) and (has_bear_sweep or is_bear_fvg) and (35 <= curr_rsi <= 65) and is_prime and (v_ratio >= 1.25):
             local_high = max(highs[max(0, i-3):i+1])
             entry = curr_p
-            sl = local_high + (0.6 * curr_atr)
+            sl = local_high + (1.0 * curr_atr)
             risk = sl - entry
             if 0.010 <= (risk / entry) <= 0.065:
                 tp1 = entry - (risk * 1.5)

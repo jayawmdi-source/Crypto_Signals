@@ -3,6 +3,8 @@ __pycache__/
 telegram_config.json
 binance_api_config.json
 .env
+vps_credentials/
+*.key
 mingit/
 mingit.zip
 
