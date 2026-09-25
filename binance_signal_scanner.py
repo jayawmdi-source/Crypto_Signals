@@ -8,11 +8,14 @@ from concurrent.futures import ThreadPoolExecutor
 
 sys.stdout.reconfigure(encoding='utf-8')
 
-# Global Constants & Risk Limits
-MAX_ACTIVE_POSITIONS = 4      # Portfolio Heat Governor: Max 4 concurrent active trades
-MAX_DAILY_LOSSES = 2          # Daily Drawdown Shield: Max 2 closed losses per UTC day
-LIMIT_EXPIRY_HOURS = 24       # Pending limit orders expire if unfilled after 24h
-FEE_BUFFER_PCT = 0.002        # 0.2% round-trip exchange fee buffer for True Break-Even
+# Global Constants & Risk Limits (Pro-Trader Hybrid Adaptive Model)
+MAX_ACTIVE_POSITIONS = 4          # Portfolio Heat Governor: Max 4 concurrent active trades
+CIRCUIT_COOLDOWN_LOSSES = 2       # Triggers 4-Hour Volatility Cooldown after 2 losses
+CIRCUIT_COOLDOWN_HOURS = 4        # 4 Hours market calming quarantine
+MAX_DAILY_HARD_STOP_LOSSES = 3    # Absolute Daily Hard Stop (Full stop until 00:00 UTC)
+MAX_DAILY_LOSSES = 2              # Backward-compatible reference
+LIMIT_EXPIRY_HOURS = 24           # Pending limit orders expire if unfilled after 24h
+FEE_BUFFER_PCT = 0.002            # 0.2% round-trip exchange fee buffer for True Break-Even
 
 BINANCE_BASES = [
     "https://fapi.binance.com/fapi/v1",
@@ -32,6 +35,25 @@ session.headers.update(HEADERS)
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 HISTORY_FILE = os.path.join(SCRIPT_DIR, "trade_history.json")
+
+def load_dotenv(env_path=None):
+    if not env_path:
+        env_path = os.path.join(SCRIPT_DIR, ".env")
+    if os.path.exists(env_path):
+        try:
+            with open(env_path, "r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if line and not line.startswith("#") and "=" in line:
+                        k, v = line.split("=", 1)
+                        k = k.strip()
+                        v = v.strip().strip('"').strip("'")
+                        if k and k not in os.environ:
+                            os.environ[k] = v
+        except Exception:
+            pass
+
+load_dotenv()
 
 try:
     from binance_futures_trader import BinanceFuturesTrader
@@ -252,12 +274,13 @@ def send_telegram_execution_alert(exec_res, sig):
     sl_order_id = exec_res.get("sl_order_id", "-")
     qty = exec_res.get("qty", "-")
 
+    risk_label = "5% Defensive Allocation 🛡️" if (exec_res.get("is_defensive") or sig.get("is_defensive")) else "10% Risk Allocation"
     msg = (
         f"🚨 <b>BINANCE LIVE TRADE EXECUTED!</b> {icon}\n"
         f"━━━━━━━━━━━━━━━━━━━━\n"
         f"🪙 <b>PAIR:</b> #{sym}\n"
         f"⚡ <b>ACTION:</b> <b>{action} ({leverage}x Isolated)</b>\n"
-        f"💵 <b>MARGIN USED:</b> <code>${margin:.2f} USDT</code> (10% Risk Allocation)\n"
+        f"💵 <b>MARGIN USED:</b> <code>${margin:.2f} USDT</code> ({risk_label})\n"
         f"📦 <b>ORDER QTY:</b> <code>{qty}</code>\n"
         f"━━━━━━━━━━━━━━━━━━━━\n"
         f"🎯 <b>FILLED ENTRY:</b> <code>${fmt_price(entry_p)}</code>\n"
@@ -336,11 +359,43 @@ def send_telegram_resolution(sig, event_type):
             f"📈 Trade is now officially <b>ACTIVE (OPEN)</b>.\n"
             f"🛑 SL: <code>${sig.get('sl_str', sig.get('sl'))}</code> | 🏆 TP1: <code>${sig.get('tp1_str', sig.get('tp1'))}</code> | 🏆 TP3: <code>${sig.get('tp_str', sig.get('tp'))}</code>"
         )
+    elif event_type == "CIRCUIT_COOLDOWN":
+        rem_m = sig.get("mins", 240) if sig else 240
+        resume_t = sig.get("resume_time", "") if sig else ""
+        msg = (
+            f"⏳ <b>CIRCUIT BREAKER: 4-HOUR VOLATILITY COOLDOWN</b> 🛡️\n"
+            f"━━━━━━━━━━━━━━━━━━━━\n"
+            f"⚠️ Two trades have hit Stop Loss today. Rather than a rigid 24-hour freeze, the bot has entered a <b>4-Hour Market Calming Quarantine</b> to let flash news & macro chop settle.\n\n"
+            f"⏱️ <b>Auto-Resume:</b> in ~{rem_m} mins {f'({resume_t} UTC)' if resume_t else ''}\n"
+            f"🛡️ <b>Post-Cooldown Strategy:</b> Defensive Half-Risk (5% Margin) on next test setup.\n"
+            f"🔒 Capital Preservation: Active."
+        )
+    elif event_type == "CIRCUIT_RESUME":
+        msg = (
+            f"🟢 <b>CIRCUIT BREAKER COOLDOWN EXPIRED</b> 🚀\n"
+            f"━━━━━━━━━━━━━━━━━━━━\n"
+            f"✅ Market volatility has settled. Auto-trading has automatically resumed in <b>Defensive Mode (5% Risk)</b>.\n"
+            f"The first test setup will use 5% margin to safely re-enter the trend before returning to normal 10% risk."
+        )
+    elif event_type == "CIRCUIT_HARD_STOP":
+        msg = (
+            f"🛑 <b>DAILY DRAWDOWN HARD STOP (3 LOSSES)</b> 🛑\n"
+            f"━━━━━━━━━━━━━━━━━━━━\n"
+            f"⚠️ Three trades hit Stop Loss today. To strictly protect capital against sustained adverse market conditions, all new trading is stopped for the rest of the UTC day.\n"
+            f"🌅 Trading will automatically resume tomorrow at 00:00 UTC."
+        )
+    elif event_type == "DEFENSIVE_CLEARED":
+        msg = (
+            f"🎯 <b>DEFENSIVE TEST TRADE SECURED!</b> 🟢\n"
+            f"━━━━━━━━━━━━━━━━━━━━\n"
+            f"Trade reached TP1 (Break-Even locked)! Defensive test successfully passed.\n"
+            f"🚀 <b>Normal 10% Position Sizing is now fully restored!</b>"
+        )
     elif event_type == "CIRCUIT_BREAKER":
         msg = (
-            f"🛑 <b>DAILY DRAWDOWN SHIELD ACTIVATED (2 LOSSES)</b> 🛡️\n"
+            f"🛑 <b>DAILY DRAWDOWN SHIELD ACTIVATED</b> 🛡️\n"
             f"━━━━━━━━━━━━━━━━━━━━\n"
-            f"⚠️ Two trades have hit Stop Loss today. To protect trading capital against adverse macro volatility, the bot has paused all new signal generation for 24 hours.\n"
+            f"⚠️ Stop Loss threshold reached today. To protect trading capital against adverse macro volatility, the bot has entered cooldown mode.\n"
             f"🔒 Capital Preservation Mode: Active."
         )
     else:
@@ -831,8 +886,21 @@ def analyze_symbol(symbol, anchored_signal=None, btc_sentiment=None, session_inf
         
         if is_long and bull_ob_1h:
             ob_info_str = f"Bullish 1H OB [${fmt_price(bull_ob_1h['bottom'])} - ${fmt_price(bull_ob_1h['top'])}]"
+            reasons.append(f"🧱 1H Demand OB: [${fmt_price(bull_ob_1h['bottom'])} - ${fmt_price(bull_ob_1h['top'])}]")
         elif not is_long and bear_ob_1h:
             ob_info_str = f"Bearish 1H OB [${fmt_price(bear_ob_1h['bottom'])} - ${fmt_price(bear_ob_1h['top'])}]"
+            reasons.append(f"🧱 1H Supply OB: [${fmt_price(bear_ob_1h['bottom'])} - ${fmt_price(bear_ob_1h['top'])}]")
+
+        if bull_fvg_1h:
+            reasons.append(f"💧 Bullish FVG Zone: [${fmt_price(bull_fvg_1h['bottom'])} - ${fmt_price(bull_fvg_1h['top'])}]")
+        elif bear_fvg_1h:
+            reasons.append(f"💧 Bearish FVG Zone: [${fmt_price(bear_fvg_1h['bottom'])} - ${fmt_price(bear_fvg_1h['top'])}]")
+
+        if sweep_1h and sweep_1h.get("details") and sweep_1h["details"] != "None":
+            reasons.append(f"⚡ Liquidity Sweep: {sweep_1h['details']}")
+
+        reasons.append(f"📊 RSI Indicator: 1D ({rsi_daily:.1f}) | 1H ({rsi_1h:.1f})")
+        reasons.append(f"📐 Volatility Safety: ATR (1.2x) Stop Offset ${fmt_price(1.2 * atr_1h)}")
 
     # =========================================================================
     # CASE 2: NEW POTENTIAL SIGNALS (Scan Fresh Setups)
@@ -845,14 +913,19 @@ def analyze_symbol(symbol, anchored_signal=None, btc_sentiment=None, session_inf
         # TIER 2: SNIPER EXTREME REVERSALS (RSI Exhaustion + CHoCH + Sweep)
         # ---------------------------------------------------------------------
         if is_extreme_overbought and choch_data["has_bearish_choch"]:
-            has_demand_conflict = bull_ob_1h and (bull_ob_1h.get('is_testing') or (bull_ob_1h['bottom'] * 0.99 <= entry <= bull_ob_1h['top'] * 1.005))
+            macro_trend_conflict = (mtf_4h["bias"] == "BULLISH") or ema_bullish
+            has_demand_conflict = (bull_ob_1h and (bull_ob_1h.get('is_testing') or (bull_ob_1h['bottom'] * 0.99 <= entry <= bull_ob_1h['top'] * 1.005))) or \
+                                  (bull_fvg_1h and (bull_fvg_1h['bottom'] * 0.99 <= entry <= bull_fvg_1h['top'] * 1.02))
             btc_blocks_short = btc_sentiment and not btc_sentiment.get("allow_shorts", True) and symbol != "BTCUSDT"
 
-            if has_demand_conflict or btc_blocks_short:
+            if macro_trend_conflict or has_demand_conflict or btc_blocks_short:
                 signal_type = "WATCHLIST"
                 tier_badge = "WATCHLIST"
+                if macro_trend_conflict:
+                    trade_setup = f"Short Blocked: 4H/Daily Macro is BULLISH"
+                    reasons.append(f"⚠️ Trend Shield: Blocked Counter-Trend Short against 4H {mtf_4h['bias']} & Daily Bullish trend ('Trend is Friend' rule)")
                 if has_demand_conflict:
-                    reasons.append(f"⚠️ Sniper Short Blocked: Sitting directly on 1H Bullish Demand Block")
+                    reasons.append(f"⚠️ Sniper Short Blocked: Sitting directly on/near 1H Bullish Demand Block or FVG")
                 if btc_blocks_short:
                     reasons.append(f"⚠️ BTC Pump Shield: Bitcoin pumping ({btc_sentiment['reason']}), Short signals paused")
             else:
@@ -880,14 +953,19 @@ def analyze_symbol(symbol, anchored_signal=None, btc_sentiment=None, session_inf
                     reasons.append(f"💧 Bearish FVG Confluence [${fmt_price(bear_fvg_1h['bottom'])} - ${fmt_price(bear_fvg_1h['top'])}]")
 
         elif is_extreme_oversold and choch_data["has_bullish_choch"]:
-            has_supply_conflict = bear_ob_1h and (bear_ob_1h.get('is_testing') or (bear_ob_1h['bottom'] * 0.995 <= entry <= bear_ob_1h['top'] * 1.01))
+            macro_trend_conflict = (mtf_4h["bias"] == "BEARISH") or (not ema_bullish)
+            has_supply_conflict = (bear_ob_1h and (bear_ob_1h.get('is_testing') or (bear_ob_1h['bottom'] * 0.995 <= entry <= bear_ob_1h['top'] * 1.01))) or \
+                                  (bear_fvg_1h and (bear_fvg_1h['bottom'] * 0.98 <= entry <= bear_fvg_1h['top'] * 1.01))
             btc_blocks_long = btc_sentiment and not btc_sentiment.get("allow_longs", True) and symbol != "BTCUSDT"
 
-            if has_supply_conflict or btc_blocks_long:
+            if macro_trend_conflict or has_supply_conflict or btc_blocks_long:
                 signal_type = "WATCHLIST"
                 tier_badge = "WATCHLIST"
+                if macro_trend_conflict:
+                    trade_setup = f"Long Blocked: 4H/Daily Macro is BEARISH"
+                    reasons.append(f"⚠️ Trend Shield: Blocked Counter-Trend Long against 4H {mtf_4h['bias']} & Daily Bearish trend ('Trend is Friend' rule)")
                 if has_supply_conflict:
-                    reasons.append(f"⚠️ Sniper Long Blocked: Sitting inside 1H Bearish Supply Block")
+                    reasons.append(f"⚠️ Sniper Long Blocked: Sitting inside/near 1H Bearish Supply Block or FVG")
                 if btc_blocks_long:
                     reasons.append(f"⚠️ BTC Dump Shield: Bitcoin dumping ({btc_sentiment['reason']}), Long signals paused")
             else:
@@ -1013,6 +1091,54 @@ def analyze_symbol(symbol, anchored_signal=None, btc_sentiment=None, session_inf
                     choch_badge = "1H CHoCH Bearish"
                 elif choch_data["has_bullish_choch"]:
                     choch_badge = "1H CHoCH Bullish"
+
+        # Apply the 4 High-Probability Filters for Maximum Win-Rate:
+        # 1. London & NY Prime Session Guard
+        # 2. Strict BTC Macro Correlation Guard
+        # 3. Volume Expansion Filter (VSA >= 1.30x SMA20)
+        # 4. Nested 4H + 1H Order Block Confluence
+        if signal_type in ["BUY / LONG", "SELL / SHORT"] and not anchored_signal:
+            # 1. Session Guard: Allow live entry execution ONLY during Prime Sessions
+            if session_info and not session_info.get("is_prime", True):
+                signal_type = "WATCHLIST"
+                tier_badge = "💤 OFF-HOURS WATCHLIST"
+                reasons.append(f"💤 Prime Session Guard: Entry held for London/NY Open (Low Off-Hours Volatility)")
+
+            # 2. Strict BTC Macro Correlation Guard
+            if btc_sentiment:
+                is_long_sig = "BUY" in signal_type or "LONG" in signal_type
+                if is_long_sig and (btc_sentiment.get("is_dumping") or "BEARISH" in str(btc_sentiment.get("status", ""))):
+                    signal_type = "WATCHLIST"
+                    tier_badge = "🛡️ BTC DUMP WATCHLIST"
+                    reasons.append(f"⚠️ BTC Macro Shield: Bitcoin is Bearish/Dumping ({btc_sentiment.get('reason')}). Long held in Watchlist.")
+                elif not is_long_sig and (btc_sentiment.get("is_pumping") or "BULLISH" in str(btc_sentiment.get("status", ""))):
+                    signal_type = "WATCHLIST"
+                    tier_badge = "🛡️ BTC PUMP WATCHLIST"
+                    reasons.append(f"⚠️ BTC Pump Shield: Bitcoin is Bullish/Pumping ({btc_sentiment.get('reason')}). Short held in Watchlist.")
+
+            # 3. Volume Expansion Filter (VSA: >= 1.30x 20-SMA)
+            volumes_1h = [float(k[5]) for k in klines_1h]
+            if len(volumes_1h) >= 21:
+                vol_sma_1h = sum(volumes_1h[-21:-1]) / 20.0
+                curr_vol_1h = volumes_1h[-1]
+                v_ratio = (curr_vol_1h / vol_sma_1h) if vol_sma_1h > 0 else 1.0
+                if v_ratio < 1.30 and signal_type in ["BUY / LONG", "SELL / SHORT"]:
+                    signal_type = "WATCHLIST"
+                    tier_badge = "📉 LOW VOLUME WATCHLIST"
+                    reasons.append(f"⚠️ Volume Expansion Guard: 1H Volume ({v_ratio:.2f}x) is below 1.30x SMA20 threshold")
+                elif signal_type in ["BUY / LONG", "SELL / SHORT"]:
+                    reasons.append(f"📊 Volume Expansion Confirmed: 1H Volume ({v_ratio:.2f}x vs 20-SMA)")
+
+            # 4. Nested 4H + 1H Order Block Confluence Check
+            klines_4h_cb = get_klines(symbol, interval="4h", limit=25)
+            if klines_4h_cb and len(klines_4h_cb) >= 20:
+                b_bull_4h, b_bear_4h = detect_1h_order_blocks(klines_4h_cb)
+                if signal_type == "BUY / LONG" and bull_ob_1h and b_bull_4h:
+                    if (bull_ob_1h['bottom'] <= b_bull_4h['top'] and bull_ob_1h['top'] >= b_bull_4h['bottom']):
+                        reasons.append(f"🔥 Nested OB Confluence: 1H Demand OB is Nested inside 4H Macro OB [${fmt_price(b_bull_4h['bottom'])} - ${fmt_price(b_bull_4h['top'])}]")
+                elif signal_type == "SELL / SHORT" and bear_ob_1h and b_bear_4h:
+                    if (bear_ob_1h['bottom'] <= b_bear_4h['top'] and bear_ob_1h['top'] >= b_bear_4h['bottom']):
+                        reasons.append(f"🔥 Nested OB Confluence: 1H Supply OB is Nested inside 4H Macro OB [${fmt_price(b_bear_4h['bottom'])} - ${fmt_price(b_bear_4h['top'])}]")
 
         # Check for Pending Limit Retest on fresh signals
         if signal_type == "BUY / LONG" and bull_ob_1h and bull_ob_1h['top'] < entry:
@@ -1147,22 +1273,100 @@ def check_and_resolve_open_trades():
     now_ts = int(datetime.now(timezone.utc).timestamp() * 1000)
     today_utc = datetime.now(timezone.utc).strftime('%Y-%m-%d')
     
-    # Calculate today's losses for Daily Drawdown Shield
+    # Calculate today's losses for Pro-Trader Hybrid Adaptive Circuit Breaker
     today_losses = 0
+    last_loss_ts = 0
     for s in existing_signals:
         if "LOSS" in s.get("status", ""):
-            res_date = s.get("resolved_at", "")[:10]
+            res_date = (s.get("resolved_at_utc") or s.get("resolved_at", ""))[:10]
             if res_date == today_utc:
                 today_losses += 1
-                
-    circuit_breaker_tripped = (today_losses >= MAX_DAILY_LOSSES)
-    if circuit_breaker_tripped and not history_data.get("circuit_breaker", {}).get("is_tripped"):
-        send_telegram_resolution(None, "CIRCUIT_BREAKER")
+                l_ts = s.get("resolved_ts") or s.get("timestamp", 0)
+                if l_ts > last_loss_ts:
+                    last_loss_ts = l_ts
+
+    # Live API Fail-Safe: Sync loss count directly from Binance Futures Realized PnL API
+    if auto_trader and auto_trader.is_configured():
+        try:
+            recent_inc = auto_trader.get_recent_income(limit=30)
+            api_today_losses = 0
+            start_of_day_ts = int(datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0).timestamp() * 1000)
+            for inc in recent_inc:
+                inc_time = int(inc.get("time", 0))
+                pnl_val = float(inc.get("income", 0.0))
+                if inc_time >= start_of_day_ts and pnl_val < -0.01:
+                    api_today_losses += 1
+                    if inc_time > last_loss_ts:
+                        last_loss_ts = inc_time
+            today_losses = max(today_losses, api_today_losses)
+        except Exception as e_inc:
+            print(f"[!] Warning: Could not sync live Binance income for circuit breaker: {e_inc}")
+
+    cb = history_data.get("circuit_breaker", {})
+    cooldown_duration_ms = CIRCUIT_COOLDOWN_HOURS * 3600 * 1000
+
+    cb_status = "NORMAL"
+    is_tripped = False
+    is_defensive = cb.get("is_defensive", False)
+    cooldown_until = cb.get("cooldown_until", 0)
+    remaining_cooldown_mins = 0
+
+    if today_losses >= MAX_DAILY_HARD_STOP_LOSSES:
+        # Stage 3: Daily Hard Stop (3 losses today -> freeze until tomorrow 00:00 UTC)
+        cb_status = "HARD_STOP"
+        is_tripped = True
+        is_defensive = False
+        if not cb.get("notified_hard_stop"):
+            send_telegram_resolution(None, "CIRCUIT_HARD_STOP")
+            cb["notified_hard_stop"] = True
+
+    elif today_losses >= CIRCUIT_COOLDOWN_LOSSES:
+        # Stage 1 & 2: 4-Hour Volatility Cooldown & Defensive Resume
+        if cooldown_until == 0 or cb.get("cooldown_date") != today_utc:
+            ref_ts = last_loss_ts if last_loss_ts > 0 else now_ts
+            cooldown_until = ref_ts + cooldown_duration_ms
+            cb["cooldown_until"] = cooldown_until
+            cb["cooldown_date"] = today_utc
+            cb["notified_cooldown"] = False
+            cb["notified_resume"] = False
+
+        if now_ts < cooldown_until:
+            # Still in 4-hour cooldown
+            cb_status = "COOLDOWN"
+            is_tripped = True
+            remaining_cooldown_mins = max(1, int((cooldown_until - now_ts) / 60000))
+            if not cb.get("notified_cooldown"):
+                resume_dt = datetime.fromtimestamp(cooldown_until / 1000, tz=timezone.utc).strftime('%H:%M')
+                send_telegram_resolution({"mins": remaining_cooldown_mins, "resume_time": resume_dt}, "CIRCUIT_COOLDOWN")
+                cb["notified_cooldown"] = True
+        else:
+            # Cooldown expired! Auto-resume in Defensive Mode (5% Risk)
+            cb_status = "DEFENSIVE_RESUME"
+            is_tripped = False
+            is_defensive = cb.get("is_defensive", True)
+            if not cb.get("notified_resume"):
+                send_telegram_resolution(None, "CIRCUIT_RESUME")
+                cb["notified_resume"] = True
+    else:
+        # Normal state (0 or 1 loss)
+        cb_status = "NORMAL"
+        is_tripped = False
+        is_defensive = False
+        cooldown_until = 0
 
     history_data["circuit_breaker"] = {
-        "is_tripped": circuit_breaker_tripped,
+        "status": cb_status,
+        "is_tripped": is_tripped,
+        "is_defensive": is_defensive,
         "losses_today": today_losses,
-        "max_allowed": MAX_DAILY_LOSSES
+        "max_allowed": MAX_DAILY_HARD_STOP_LOSSES,
+        "cooldown_losses": CIRCUIT_COOLDOWN_LOSSES,
+        "cooldown_until": cooldown_until,
+        "cooldown_date": cb.get("cooldown_date", today_utc),
+        "remaining_cooldown_mins": remaining_cooldown_mins,
+        "notified_cooldown": cb.get("notified_cooldown", False),
+        "notified_resume": cb.get("notified_resume", False),
+        "notified_hard_stop": cb.get("notified_hard_stop", False)
     }
 
     for s in existing_signals:
@@ -1246,24 +1450,33 @@ def check_and_resolve_open_trades():
                         if auto_trader and auto_trader.is_live_enabled():
                             auto_trader.close_position_market(s["symbol"], is_long, fraction=1.0)
 
+                        now_utc_str = datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M')
+                        now_utc_ts = int(datetime.now(timezone.utc).timestamp() * 1000)
+
                         if s["status"] == "TP2_LOCKED_RUNNING":
                             s["status"] = "WIN (TP2 Trailed / Locked +1.5R)"
                             s["outcome_pnl"] = +1.5
-                            s["resolved_at"] = datetime.now().strftime('%Y-%m-%d %H:%M')
+                            s["resolved_at"] = now_utc_str
+                            s["resolved_at_utc"] = now_utc_str
+                            s["resolved_ts"] = now_utc_ts
                             if not s.get("notified_loss"):
                                 s["notified_loss"] = True
                                 send_telegram_resolution(s, "WIN_LOCKED")
                         elif s["status"] == "TP1_BE_RUNNING":
                             s["status"] = "WIN (TP1 Hit / Break-Even Exit)"
                             s["outcome_pnl"] = +0.75
-                            s["resolved_at"] = datetime.now().strftime('%Y-%m-%d %H:%M')
+                            s["resolved_at"] = now_utc_str
+                            s["resolved_at_utc"] = now_utc_str
+                            s["resolved_ts"] = now_utc_ts
                             if not s.get("notified_loss"):
                                 s["notified_loss"] = True
                                 send_telegram_resolution(s, "WIN_BE")
                         else:
                             s["status"] = "LOSS (SL Hit)"
                             s["outcome_pnl"] = -1.0
-                            s["resolved_at"] = datetime.now().strftime('%Y-%m-%d %H:%M')
+                            s["resolved_at"] = now_utc_str
+                            s["resolved_at_utc"] = now_utc_str
+                            s["resolved_ts"] = now_utc_ts
                             if not s.get("notified_loss"):
                                 s["notified_loss"] = True
                                 send_telegram_resolution(s, "LOSS_SL")
@@ -1275,7 +1488,9 @@ def check_and_resolve_open_trades():
                     if is_tp3_touched:
                         s["status"] = "WIN (1:3 TP3 Hit)"
                         s["outcome_pnl"] = +3.0
-                        s["resolved_at"] = datetime.now().strftime('%Y-%m-%d %H:%M')
+                        s["resolved_at"] = datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M')
+                        s["resolved_at_utc"] = datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M')
+                        s["resolved_ts"] = int(datetime.now(timezone.utc).timestamp() * 1000)
                         if auto_trader and auto_trader.is_live_enabled():
                             auto_trader.close_position_market(s["symbol"], is_long, fraction=1.0)
                         if not s.get("notified_win"):
@@ -1311,6 +1526,9 @@ def check_and_resolve_open_trades():
                         if not s.get("notified_tp1"):
                             s["notified_tp1"] = True
                             send_telegram_resolution(s, "WIN_TP1")
+                            if history_data.get("circuit_breaker", {}).get("is_defensive"):
+                                history_data["circuit_breaker"]["is_defensive"] = False
+                                send_telegram_resolution(s, "DEFENSIVE_CLEARED")
 
     # Ensure physical Stop Loss & TP protection on Binance for all active positions
     if auto_trader and auto_trader.is_live_enabled():
@@ -1332,7 +1550,8 @@ def check_and_resolve_open_trades():
                     entry_p = float(rp.get("entry_price", 0.0))
                     if entry_p > 0:
                         safe_sl = entry_p * 0.96 if rp_is_long else entry_p * 1.04
-                        safe_tp = entry_p * 1.08 if rp_is_long else entry_p * 0.92
+                        risk = abs(safe_sl - entry_p)
+                        safe_tp = entry_p + (risk * 3.0) if rp_is_long else entry_p - (risk * 3.0)
                         auto_trader.ensure_position_protection(rp_sym, rp_is_long, safe_sl, safe_tp, abs(rp_amt))
         except Exception as e_prot:
             print(f"[!] Protection auto-shield sync error: {e_prot}")
@@ -1354,6 +1573,31 @@ def recalculate_history_stats(history_data):
     win_rate = (wins / total_closed * 100) if total_closed > 0 else 0.0
     net_r = round(sum(s.get("outcome_pnl", 0.0) for s in existing_signals), 1)
 
+    # Calculate Realized Net PnL in USDT strictly for trades tracked by this bot
+    realized_usdt = 0.0
+    first_sig_ts = min([s.get("timestamp", 0) for s in existing_signals]) if existing_signals else 0
+    
+    if auto_trader and auto_trader.is_configured() and first_sig_ts > 0:
+        try:
+            recent_inc = auto_trader.get_recent_income(limit=100)
+            if recent_inc:
+                # Sum REALIZED_PNL + COMMISSION + FUNDING_FEE for exact net account PnL
+                bot_inc = [
+                    float(inc.get("income", 0.0)) for inc in recent_inc
+                    if inc.get("incomeType") in ["REALIZED_PNL", "COMMISSION", "FUNDING_FEE"]
+                    and int(inc.get("time", 0)) >= (first_sig_ts - 60000)
+                ]
+                if bot_inc:
+                    realized_usdt = sum(bot_inc)
+        except Exception as e_inc:
+            print(f"[!] Warning: Income sync error: {e_inc}")
+            
+    if realized_usdt == 0.0 and closed:
+        realized_usdt = sum(
+            (s.get("outcome_pnl", 0.0) * float(s.get("executed_margin", 1.0) or 1.0))
+            for s in closed
+        )
+
     history_data.update({
         "updated_at": datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
         "total_signals": len(existing_signals),
@@ -1363,6 +1607,7 @@ def recalculate_history_stats(history_data):
         "pending": pending,
         "win_rate_pct": round(win_rate, 1),
         "net_pnl_r": net_r,
+        "net_pnl_usdt": round(realized_usdt, 2),
         "signals": existing_signals
     })
     return history_data
@@ -1396,9 +1641,20 @@ def record_new_signals_to_history(actionable_signals, history_data, open_symbols
         # 1. Check Circuit Breaker
         if is_circuit_tripped:
             act["signal"] = "WATCHLIST"
-            act["tier_badge"] = "🛑 CIRCUIT BREAKER"
-            act["reasons"].append("Daily Drawdown Shield active: Max 2 daily losses hit. New trade signals paused.")
+            cb_st = circuit_breaker.get("status", "COOLDOWN")
+            if cb_st == "COOLDOWN":
+                rem_m = circuit_breaker.get("remaining_cooldown_mins", 0)
+                act["tier_badge"] = f"⏳ 4H COOLDOWN ({rem_m}m left)"
+                act["reasons"].append(f"Pro-Trader Circuit Breaker: 4-Hour Volatility Cooldown active ({rem_m}m remaining). Resumes in Defensive Mode.")
+            else:
+                act["tier_badge"] = "🛑 DAILY HARD STOP (3 Losses)"
+                act["reasons"].append("Daily Drawdown Hard Stop: Max 3 daily losses hit. Trading stopped until 00:00 UTC to protect capital.")
             continue
+
+        if circuit_breaker.get("is_defensive"):
+            act["is_defensive"] = True
+            act["risk_pct_override"] = 5.0
+            act["tier_badge"] = "🛡️ DEFENSIVE RE-ENTRY (5% Risk)"
 
         # 2. Check Portfolio Heat Governor (Max 4 active trades)
         if active_positions_count >= MAX_ACTIVE_POSITIONS:
@@ -1443,6 +1699,14 @@ def record_new_signals_to_history(actionable_signals, history_data, open_symbols
                 "outcome_pnl": 0.0
             }
             if initial_status == "OPEN":
+                # Strict "Trend is your Friend" safety guard for live execution & trade recording:
+                sig_type_str = str(act.get("signal", "")).upper()
+                macro_bias_str = str(act.get("mtf_status", "")).upper()
+                is_long_act = "BUY" in sig_type_str or "LONG" in sig_type_str
+                if (is_long_act and "BEARISH" in macro_bias_str) or (not is_long_act and "BULLISH" in macro_bias_str):
+                    print(f"[!] Safety Shield: Blocked counter-trend trade for {sym} (Signal={sig_type_str}, 4H Macro={macro_bias_str} - 'Trend is Friend' rule).")
+                    continue
+
                 if auto_trader and auto_trader.is_live_enabled():
                     exec_res = auto_trader.execute_signal(act)
                     if not exec_res:
@@ -1585,7 +1849,14 @@ def scan_all_pairs():
     print(" 🎯 BINANCE INSTITUTIONAL SMC 2.0 ENGINE (4H MTF + FVG + LIQUIDITY SWEEP + ATR STOPS)")
     print(f" Timestamp: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} (Local)")
     print(f" Active Session: {session_info['badge']} ({session_info['desc']})")
-    print(f" Circuit Breaker: {'🛑 TRIPPED (Max Losses Reached)' if circuit_breaker.get('is_tripped') else '🟢 ACTIVE SHIELD (Safe)'} [Today Losses: {circuit_breaker.get('losses_today', 0)}/{MAX_DAILY_LOSSES}]")
+    cb_txt = "🟢 NORMAL SHIELD"
+    if circuit_breaker.get("status") == "HARD_STOP":
+        cb_txt = "🛑 HARD STOP (Max 3 Losses Hit - Paused until 00:00 UTC)"
+    elif circuit_breaker.get("status") == "COOLDOWN":
+        cb_txt = f"⏳ 4H COOLDOWN ({circuit_breaker.get('remaining_cooldown_mins', 0)}m remaining)"
+    elif circuit_breaker.get("is_defensive"):
+        cb_txt = "🛡️ DEFENSIVE RESUME (5% Half-Risk Active)"
+    print(f" Circuit Breaker: {cb_txt} [Today Losses: {circuit_breaker.get('losses_today', 0)}/{MAX_DAILY_HARD_STOP_LOSSES}]")
     print(f" Portfolio Heat: {len(open_symbols_before_scan)} / {MAX_ACTIVE_POSITIONS} Max Positions")
     print(f" Total Symbols to Scan: {len(pairs)} | Active Monitored: {len(open_signals_map)}")
     print(f" 🌐 BTC Macro Sentiment: {btc_sentiment['status']} ({btc_sentiment['reason']})")
@@ -1635,7 +1906,10 @@ def scan_all_pairs():
     json_path = os.path.join(SCRIPT_DIR, "latest_signals.json")
     html_path = os.path.join(SCRIPT_DIR, "dashboard.html")
     index_path = os.path.join(SCRIPT_DIR, "index.html")
-    
+    parent_dir = os.path.dirname(SCRIPT_DIR)
+    html_parent_path = os.path.join(parent_dir, "dashboard.html")
+    index_parent_path = os.path.join(parent_dir, "index.html")
+
     # Fetch real live Binance account balance & positions
     account_info = None
     real_positions = []
@@ -1668,9 +1942,14 @@ def scan_all_pairs():
 
     generate_html_dashboard(payload, html_path)
     generate_html_dashboard(payload, index_path)
+    try:
+        generate_html_dashboard(payload, html_parent_path)
+        generate_html_dashboard(payload, index_parent_path)
+    except Exception:
+        pass
     print(f"\n[+] Updated {json_path}")
-    print(f"[+] Updated {html_path} (Live at http://localhost/crypto/dashboard.html)")
-    print(f"[+] Updated {index_path} (For GitHub Pages Cloud)")
+    print(f"[+] Updated {html_path} & {html_parent_path}")
+    print(f"[+] Updated {index_path} & {index_parent_path}")
 
     return actionable, results
 
@@ -1681,6 +1960,13 @@ def generate_html_dashboard(data, output_path):
     wins = history.get("wins", 0)
     losses = history.get("losses", 0)
     net_r = history.get("net_pnl_r", 0.0)
+    net_usdt = history.get("net_pnl_usdt", 0.0)
+    net_usdt_sign = "+" if net_usdt >= 0 else "-"
+    if net_usdt == 0.0:
+        net_usdt_sign = ""
+    net_usdt_color = "val-green" if net_usdt >= 0 else "val-red"
+    net_usdt_display = f"{net_usdt_sign}${abs(net_usdt):,.2f} USDT"
+
     btc_sentiment = data.get("btc_sentiment", {})
     btc_status = btc_sentiment.get("status", "BULLISH 🟢")
     session_info = data.get("session", {})
@@ -1703,35 +1989,86 @@ def generate_html_dashboard(data, output_path):
     pnl_color = "text-success" if tot_unrealized >= 0 else "text-danger"
     floating_badge = f'<span class="{pnl_color} fw-bold ms-1" id="binance-floating-pnl">({pnl_sign}${tot_unrealized:,.2f} Floating)</span>' if tot_unrealized != 0 else '<span class="text-muted ms-1" id="binance-floating-pnl">(+$0.00)</span>'
 
-    cb_html = f'<span class="badge bg-danger text-white"><i class="fa-solid fa-hand me-1"></i>🛑 CIRCUIT BREAKER TRIPPED ({cb_losses}/2 Losses)</span>' if cb_tripped else f'<span class="badge bg-success bg-opacity-25 text-success border border-success"><i class="fa-solid fa-shield-halved me-1"></i>DRAWDOWN SHIELD ACTIVE ({cb_losses}/2)</span>'
+    if cb_tripped:
+        if circuit_breaker.get("status") == "COOLDOWN":
+            rem_m = circuit_breaker.get("remaining_cooldown_mins", 0)
+            cb_html = f'<span class="badge bg-warning text-dark"><i class="fa-solid fa-hourglass-half me-1"></i>⏳ 4H COOLDOWN ({rem_m}m left)</span>'
+        else:
+            cb_html = f'<span class="badge bg-danger text-white"><i class="fa-solid fa-hand me-1"></i>🛑 HARD STOP ACTIVE ({cb_losses}/3 Losses)</span>'
+    elif circuit_breaker.get("is_defensive"):
+        cb_html = f'<span class="badge bg-info text-dark"><i class="fa-solid fa-shield-halved me-1"></i>🛡️ DEFENSIVE RESUME (5% Risk)</span>'
+    else:
+        cb_html = f'<span class="badge bg-success bg-opacity-25 text-success border border-success"><i class="fa-solid fa-shield-halved me-1"></i>ADAPTIVE SHIELD ACTIVE ({cb_losses}/3)</span>'
 
     html_content = f"""<!DOCTYPE html>
-<html lang="en">
+<html lang="en" data-bs-theme="dark">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
     <meta http-equiv="Pragma" content="no-cache">
     <meta http-equiv="Expires" content="0">
-    <title>Binance SMC Pro 2.0 - Institutional Live Scanner</title>
+    <title>DMD SMC Pro 2.0 - Institutional Live Scanner</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
     <style>
         :root {{
-            --bg-dark: #0b0e14;
-            --card-dark: #151a23;
-            --border-color: #242c38;
+            --bg-dark: #080b11;
+            --card-dark: #121824;
+            --border-color: #1e293b;
             --accent-green: #0ecb81;
             --accent-red: #f6465d;
             --accent-yellow: #f0b90b;
             --accent-purple: #9b51e0;
             --accent-cyan: #00f2fe;
         }}
-        body {{
-            background-color: var(--bg-dark);
-            color: #eaecef;
+        html, body {{
+            background-color: #080b11 !important;
+            color: #f8fafc !important;
             font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
             padding-bottom: 50px;
+        }}
+        /* Master High-Contrast Rule: Force ALL muted & small text to be bright readable slate blue */
+        .text-muted, small.text-muted, span.text-muted, div.text-muted, p.text-muted, td.text-muted {{
+            color: #94a3b8 !important;
+        }}
+        .stat-title, .metric-title {{
+            font-size: 0.76rem !important;
+            color: #cbd5e1 !important;
+            font-weight: 600 !important;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            margin-bottom: 4px;
+        }}
+        .stat-card {{
+            background-color: #121824 !important;
+            border: 1px solid #1e293b !important;
+            border-radius: 12px;
+            padding: 16px 20px;
+            box-shadow: 0 4px 20px rgba(0, 0, 0, 0.4);
+        }}
+        .signal-card {{
+            background-color: #121824 !important;
+            border: 1px solid #1e293b !important;
+            border-radius: 12px;
+            padding: 20px;
+            transition: all 0.3s ease;
+            position: relative;
+            overflow: hidden;
+            box-shadow: 0 4px 20px rgba(0, 0, 0, 0.4);
+        }}
+        .signal-card:hover {{
+            transform: translateY(-4px);
+            border-color: #3b82f6 !important;
+            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.6);
+        }}
+        .pos-label {{
+            color: #94a3b8 !important;
+            font-weight: 600 !important;
+        }}
+        .pos-val {{
+            color: #f8fafc !important;
+            font-weight: 700 !important;
         }}
         .navbar {{
             background-color: #12161f;
@@ -1894,7 +2231,7 @@ def generate_html_dashboard(data, output_path):
             <span class="navbar-brand mb-0 h1 d-flex align-items-center">
                 <i class="fa-solid fa-shield-halved text-warning me-2 fs-3"></i>
                 <div>
-                    <span class="fw-bold">Binance SMC Pro 2.0</span>
+                    <span class="fw-bold">DMD SMC Pro 2.0</span>
                     <span class="badge bg-warning text-dark ms-2" style="font-size: 0.7rem;">Institutional Quantitative Engine</span>
                 </div>
             </span>
@@ -1917,7 +2254,7 @@ def generate_html_dashboard(data, output_path):
 
     <div class="container-fluid px-4">
         
-        <!-- Live Real Binance Account Balance & Auto-Trader Status -->
+        <!-- Live Real DMD Account Balance & Auto-Trader Status -->
         <div class="row g-3 mb-4">
             <div class="col-12 col-md-3">
                 <div class="stat-card" style="border-left: 4px solid #f0b90b;">
@@ -1949,14 +2286,14 @@ def generate_html_dashboard(data, output_path):
             </div>
         </div>
 
-        <!-- Section: Active Binance Positions (Live Execution) -->
+        <!-- Section: Active DMD Positions (Live Execution) -->
         <div class="mb-4" id="live-positions-section">
             <div class="d-flex align-items-center justify-content-between mb-2">
                 <h4 class="fw-bold mb-0 text-white">
-                    <i class="fa-solid fa-chart-line text-success me-2"></i>Active Binance Positions (Live Execution)
+                    <i class="fa-solid fa-chart-line text-success me-2"></i>Active DMD Positions (Live Execution)
                     <span class="badge bg-success ms-2" id="live-pos-count-badge">0 Active</span>
                 </h4>
-                <small class="text-muted">Live matching engine stream from Binance Futures</small>
+                <small class="text-muted">Live matching engine stream from DMD Futures</small>
             </div>
             <div id="live-positions-container">
             </div>
@@ -1987,9 +2324,9 @@ def generate_html_dashboard(data, output_path):
             </div>
             <div class="col-12 col-md-3">
                 <div class="stat-card">
-                    <div class="stat-title"><i class="fa-solid fa-scale-balanced text-info me-1"></i> Net Return (R)</div>
-                    <div class="stat-value text-info" id="stat-net-r">{'+' if net_r >= 0 else ''}{net_r} R</div>
-                    <small class="text-muted">Cumulative Multiple Gain</small>
+                    <div class="stat-title"><i class="fa-solid fa-scale-balanced text-info me-1"></i> Net Realized Return ($ USDT)</div>
+                    <div class="stat-value {net_usdt_color}" id="stat-net-r">{net_usdt_display} <span style="font-size: 0.95rem;" class="text-info font-monospace">({'+' if net_r >= 0 else ''}{net_r} R)</span></div>
+                    <small class="text-muted">Realized Cumulative PnL</small>
                 </div>
             </div>
         </div>
@@ -2001,7 +2338,7 @@ def generate_html_dashboard(data, output_path):
                     <i class="fa-solid fa-bolt text-warning me-2"></i>Institutional SMC Setups (4H MTF + FVG + ATR Stops)
                     <span class="badge bg-warning text-dark ms-2" id="active-total-badge">{data.get('active_count', 0)}</span>
                 </h4>
-                <small class="text-muted">Live 4s ticker streaming directly from Binance API</small>
+                <small class="text-muted">Live 4s ticker streaming directly from DMD API</small>
             </div>
 
             <!-- Category Filter Tabs -->
@@ -2267,15 +2604,18 @@ def generate_html_dashboard(data, output_path):
                             </div>
 
                             <!-- Confirmations List -->
-                            <div class="small text-muted border-top border-secondary border-opacity-25 pt-2 mt-2">
-                                <div class="fw-bold text-light mb-1" style="font-size: 0.72rem;">CONFIRMATIONS:</div>
-                                ${{sig.reasons.map(r => `<div class="text-truncate" style="font-size: 0.72rem;">• ${{r}}</div>`).slice(0, 3).join('')}}
+                            <div class="border-top border-secondary border-opacity-25 pt-2 mt-2">
+                                <div class="fw-bold mb-1 d-flex align-items-center" style="font-size: 0.8rem;">
+                                    <i class="fa-solid fa-circle-check text-success me-1"></i>
+                                    <span style="color: #f0b90b !important; font-weight: 700; letter-spacing: 0.5px;">CONFIRMATIONS:</span>
+                                </div>
+                                ${{sig.reasons && sig.reasons.length > 0 ? sig.reasons.map(r => `<div class="mb-1" style="color: #f1f5f9 !important; font-size: 0.78rem !important; font-weight: 500 !important; line-height: 1.35; word-break: break-word;" title="${{r}}">• ${{r}}</div>`).join('') : '<div style="color: #94a3b8 !important; font-size: 0.75rem; font-style: italic;">• Technical Confluence Active</div>'}}
                             </div>
 
                             <!-- Action Button -->
                             <div class="mt-3">
                                 <a href="https://www.binance.com/en/trade/${{sig.symbol}}" target="_blank" class="btn btn-sm btn-outline-warning w-100 fw-bold">
-                                    <i class="fa-solid fa-arrow-up-right-from-square me-1"></i>Trade on Binance
+                                    <i class="fa-solid fa-arrow-up-right-from-square me-1"></i>Trade on DMD
                                 </a>
                             </div>
                         </div>
@@ -2323,8 +2663,12 @@ def generate_html_dashboard(data, output_path):
                 }}
                 const netREl = document.getElementById('stat-net-r');
                 if (netREl && hist.net_pnl_r !== undefined) {{
-                    const sign = hist.net_pnl_r >= 0 ? '+' : '';
-                    netREl.innerText = `${{sign}}${{hist.net_pnl_r.toFixed(1)}} R`;
+                    const rSign = hist.net_pnl_r >= 0 ? '+' : '';
+                    const usdtVal = hist.net_pnl_usdt !== undefined ? hist.net_pnl_usdt : 0.0;
+                    const uSign = usdtVal >= 0 ? '+' : '';
+                    const uColor = usdtVal >= 0 ? 'val-green' : 'val-red';
+                    netREl.className = `stat-value ${{uColor}}`;
+                    netREl.innerHTML = `${{uSign}}$${{Math.abs(usdtVal).toFixed(2)}} USDT <span style="font-size: 0.95rem;" class="text-info font-monospace">(${{rSign}}${{hist.net_pnl_r.toFixed(1)}} R)</span>`;
                 }}
             }}
 
@@ -2374,7 +2718,7 @@ def generate_html_dashboard(data, output_path):
                                 <i class="fa-solid fa-shield-halved"></i>
                                 <span>Capital 100% Protected in Available Margin</span>
                             </div>
-                            <small class="text-white-50">10x Isolated engine is scanning 150 pairs every 60s for institutional A+ setups. When triggered, active positions will appear here with live PnL & Binance Order ID.</small>
+                            <small class="text-white-50">10x Isolated engine is scanning 150 pairs every 60s for institutional A+ setups. When triggered, active positions will appear here with live PnL & DMD Order ID.</small>
                         </div>
                     `;
                 }} else {{
@@ -2393,20 +2737,20 @@ def generate_html_dashboard(data, output_path):
                                     <span class="badge ${{isLong ? 'bg-success' : 'bg-danger'}}">${{p.side}} ${{p.leverage}}x</span>
                                 </div>
                                 <div class="d-flex justify-content-between py-1 border-bottom border-secondary border-opacity-25 small">
-                                    <span class="text-muted">Entry / Mark:</span>
+                                    <span class="pos-label">Entry / Mark:</span>
                                     <span class="text-white fw-bold">$${{p.entry_price.toLocaleString()}} / $${{p.mark_price.toLocaleString()}}</span>
                                 </div>
                                 <div class="d-flex justify-content-between py-1 border-bottom border-secondary border-opacity-25 small">
-                                    <span class="text-muted">Isolated Margin:</span>
+                                    <span class="pos-label">Isolated Margin:</span>
                                     <span class="text-warning fw-bold">$${{p.isolated_margin.toFixed(2)}} USDT (${{p.position_amt}})</span>
                                 </div>
                                 <div class="d-flex justify-content-between py-1 border-bottom border-secondary border-opacity-25 small">
-                                    <span class="text-muted">Unrealized PnL:</span>
+                                    <span class="pos-label">Unrealized PnL:</span>
                                     <span class="fw-bold ${{pnlColor}}">${{pnlSign}}$${{p.unrealized_pnl.toFixed(4)}} USDT (${{pnlSign}}${{p.pnl_pct.toFixed(2)}}%)</span>
                                 </div>
                                 <div class="mt-2 text-center">
                                     <span class="badge bg-dark border border-success text-success" style="font-size: 0.72rem;">
-                                        <i class="fa-solid fa-shield-halved me-1"></i>Hardware Stop Loss Active on Binance
+                                        <i class="fa-solid fa-shield-halved me-1"></i>Hardware Stop Loss Active on DMD
                                     </span>
                                 </div>
                             </div>

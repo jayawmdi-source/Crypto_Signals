@@ -26,6 +26,25 @@ SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 CONFIG_FILE = os.path.join(SCRIPT_DIR, "binance_api_config.json")
 BASE_URL = "https://fapi.binance.com"
 
+def load_dotenv(env_path=None):
+    if not env_path:
+        env_path = os.path.join(SCRIPT_DIR, ".env")
+    if os.path.exists(env_path):
+        try:
+            with open(env_path, "r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if line and not line.startswith("#") and "=" in line:
+                        k, v = line.split("=", 1)
+                        k = k.strip()
+                        v = v.strip().strip('"').strip("'")
+                        if k and k not in os.environ:
+                            os.environ[k] = v
+        except Exception:
+            pass
+
+load_dotenv()
+
 class BinanceFuturesTrader:
     def __init__(self, config_path=CONFIG_FILE):
         self.config_path = config_path
@@ -475,6 +494,15 @@ class BinanceFuturesTrader:
         exit_side = "SELL" if is_long else "BUY"
         pos_side = ("LONG" if is_long else "SHORT") if self.is_hedge_mode else "BOTH"
 
+        # Strict "Trend is your Friend" safety guard on real money execution:
+        mtf_bias = str(sig.get("mtf_status", "")).upper()
+        if is_long and "BEARISH" in mtf_bias:
+            print(f"[!] Auto-Trader Safety: Blocked LONG execution on {symbol} - 4H Macro is BEARISH ('Trend is your Friend' rule).")
+            return None
+        if not is_long and "BULLISH" in mtf_bias:
+            print(f"[!] Auto-Trader Safety: Blocked SHORT execution on {symbol} - 4H Macro is BULLISH ('Trend is your Friend' rule).")
+            return None
+
         entry_price = float(sig.get("raw_entry") or sig.get("entry", 0))
         sl_price = float(sig.get("raw_sl") or sig.get("sl", 0))
         tp_price = float(sig.get("raw_tp") or sig.get("tp", 0))
@@ -512,22 +540,30 @@ class BinanceFuturesTrader:
         avail_usdt = balances.get("available_balance", 0.0)
         wallet_usdt = balances.get("wallet_balance", avail_usdt)
         
-        # Effective base balance: strictly the smaller of available or wallet USDT
-        # This prevents Multi-Assets Mode or portfolio margin from inflating position size
-        base_bal = min(avail_usdt, wallet_usdt) if wallet_usdt > 0 else avail_usdt
+        # Dynamic Risk Allocation: Risk 1.0% of Available USDT Equity (or 0.5% in Defensive Mode)
+        # Formula: Qty = (Equity * Risk%) / |Entry - StopLoss|
+        size_pct = float(sig.get("risk_pct_override") or (0.5 if sig.get("is_defensive") else 1.0))
+        risk_usdt = avail_usdt * (size_pct / 100.0)
+        stop_dist = abs(entry_price - sl_price)
         
-        if base_bal < 3.0:
-            print(f"[!] Auto-Trader: Insufficient balance (${base_bal:.2f} USDT). Minimum $3.00 required.")
+        if stop_dist > 0:
+            raw_qty = risk_usdt / stop_dist
+        else:
+            raw_qty = (avail_usdt * 0.10 * self.leverage) / entry_price
+            
+        margin_allocated = (raw_qty * entry_price) / self.leverage
+        # Cap margin at max 25% of available USDT per single position to prevent over-leverage
+        if margin_allocated > avail_usdt * 0.25:
+            margin_allocated = avail_usdt * 0.25
+            raw_qty = (margin_allocated * self.leverage) / entry_price
+        
+        if avail_usdt < 3.0 or margin_allocated < 0.50:
+            print(f"[!] Auto-Trader: Insufficient available balance (${avail_usdt:.2f} USDT). Minimum $3.00 required.")
             return None
 
         # 3. Enforce ISOLATED margin and leverage FIRST before calculating sizes
         self.set_margin_type_isolated(symbol)
         self.set_leverage(symbol, self.leverage)
-
-        # Calculate Position Margin: strictly 10% of base balance (e.g. 10% of $43.32 = $4.33 USDT)
-        margin_allocated = base_bal * (self.position_size_pct / 100.0)
-        notional_value = margin_allocated * self.leverage
-        raw_qty = notional_value / entry_price
 
         # Symbol precision rules
         rules = self.get_symbol_rules(symbol)
@@ -563,7 +599,7 @@ class BinanceFuturesTrader:
         })
 
         try:
-            print(f"[🚀] Placing LIVE {side} ({pos_side}) MARKET order for {symbol} | Qty: {order_qty} (~${margin_allocated:.2f} Margin @ {self.leverage}x)...")
+            print(f"[🚀] Placing LIVE {side} ({pos_side}) MARKET order for {symbol} | Qty: {order_qty} (Risking ~${risk_usdt:.2f} USDT @ {self.leverage}x)...")
             resp = self.session.post(f"{BASE_URL}/fapi/v1/order", data=entry_params, timeout=10)
             if resp.status_code != 200:
                 print(f"[!] Binance Order Error ({resp.status_code}): {resp.text}")
@@ -579,7 +615,17 @@ class BinanceFuturesTrader:
             if sl_order_id:
                 print(f"[🛡️] {symbol} STOP_MARKET placed @ ${sl_formatted} (ID: {sl_order_id} via {sl_res.get('endpoint')})")
             else:
-                print(f"[!] WARNING: Failed to place STOP_MARKET for {symbol}.")
+                # EMERGENCY NAKED POSITION GUARD: Immediate rollback if STOP_MARKET failed
+                print(f"[🚨] EMERGENCY GUARD: STOP_MARKET failed to place for {symbol}! Emergency market exit to prevent naked position...")
+                close_params = self._sign_request({
+                    "symbol": symbol,
+                    "side": exit_side,
+                    "positionSide": pos_side,
+                    "type": "MARKET",
+                    "quantity": order_qty
+                })
+                self.session.post(f"{BASE_URL}/fapi/v1/order", data=close_params, timeout=8)
+                return None
 
             # 6. Instantly place Hardware TAKE_PROFIT_MARKET Order directly on Binance Matching Engine
             tp_res = self._place_conditional_order(symbol, exit_side, "TAKE_PROFIT_MARKET", tp_formatted, pos_side, order_qty)
@@ -594,6 +640,8 @@ class BinanceFuturesTrader:
                 "side": side,
                 "qty": order_qty,
                 "margin_usdt": margin_allocated,
+                "risk_pct": size_pct,
+                "is_defensive": bool(sig.get("is_defensive")),
                 "leverage": self.leverage,
                 "entry_price": avg_price,
                 "sl_price": sl_formatted,
@@ -611,8 +659,23 @@ class BinanceFuturesTrader:
             print(f"[!] Exception during order placement: {e}")
             return None
 
+    def cancel_algo_orders_by_type(self, symbol, order_type="STOP_MARKET"):
+        """Cancels only specific algo order types (e.g. STOP_MARKET) while leaving other orders intact"""
+        if not self.is_configured():
+            return
+        try:
+            algos = self.get_open_algo_orders(symbol)
+            for a in algos:
+                if a.get("orderType") == order_type or a.get("type") == order_type:
+                    aid = a.get("algoId")
+                    if aid:
+                        p = self._sign_request({"algoId": aid, "symbol": symbol})
+                        self.session.delete(f"{BASE_URL}/fapi/v1/algoOrder", params=p, timeout=6)
+        except Exception as e:
+            print(f"[!] Error cancelling {order_type} for {symbol}: {e}")
+
     def trail_stop_loss(self, symbol, is_long, new_sl_price, qty=None):
-        """Cancels old conditional orders and places updated Stop Loss at Break-Even or TP1"""
+        """Cancels old conditional SL orders and places updated Stop Loss at Break-Even or TP1, keeping TP order intact"""
         if not self.is_live_enabled():
             return False
 
@@ -624,8 +687,8 @@ class BinanceFuturesTrader:
         pos_side = ("LONG" if is_long else "SHORT") if self.is_hedge_mode else "BOTH"
 
         try:
-            # Cancel all existing open conditional and normal orders for this symbol
-            self.cancel_all_symbol_orders(symbol)
+            # Cancel only old STOP_MARKET algo orders so TAKE_PROFIT_MARKET remains active on Binance!
+            self.cancel_algo_orders_by_type(symbol, "STOP_MARKET")
             
             # Place new trailed STOP_MARKET via Algo Order service
             res = self._place_conditional_order(symbol, exit_side, "STOP_MARKET", sl_formatted, pos_side, qty)
