@@ -3178,7 +3178,7 @@ def generate_html_dashboard(data, output_path):
                 if (netREl && hist.net_pnl_r !== undefined) {{
                     const rSign = hist.net_pnl_r >= 0 ? '+' : '';
                     const usdtVal = hist.net_pnl_usdt !== undefined ? hist.net_pnl_usdt : 0.0;
-                    const uSign = usdtVal >= 0 ? '+' : '';
+                    const uSign = usdtVal > 0 ? '+' : (usdtVal < 0 ? '-' : '');
                     const uColor = usdtVal >= 0 ? 'val-green' : 'val-red';
                     netREl.className = `stat-value ${{uColor}}`;
                     netREl.innerHTML = `${{uSign}}$${{Math.abs(usdtVal).toFixed(2)}} USDT <span style="font-size: 0.95rem;" class="text-info font-monospace">(${{rSign}}${{hist.net_pnl_r.toFixed(1)}} R)</span>`;
