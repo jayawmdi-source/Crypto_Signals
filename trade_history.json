@@ -1,20 +1,20 @@
 {
-  "updated_at": "2026-09-28 06:18:30",
-  "total_signals": 33,
-  "total_closed": 26,
-  "wins": 7,
-  "losses": 10,
-  "pending": 7,
-  "win_rate_pct": 26.9,
-  "net_pnl_r": 2.8,
+  "updated_at": "2026-09-28 15:42:27",
+  "total_signals": 12,
+  "total_closed": 11,
+  "wins": 3,
+  "losses": 8,
+  "pending": 1,
+  "win_rate_pct": 27.3,
+  "net_pnl_r": -1.2,
   "circuit_breaker": {
-    "status": "HARD_STOP",
-    "is_tripped": true,
+    "status": "NORMAL",
+    "is_tripped": false,
     "is_defensive": false,
-    "losses_today": 4,
+    "losses_today": 1,
     "max_allowed": 3,
     "cooldown_losses": 2,
-    "cooldown_until": 1790580678572,
+    "cooldown_until": 0,
     "cooldown_date": "2026-09-28",
     "remaining_cooldown_mins": 0,
     "notified_cooldown": true,
@@ -440,10 +440,14 @@
         "reward_pct": "11.46%",
         "dist_pct": "0.6%"
       },
-      "status": "OPEN",
-      "outcome_pnl": 0.0,
+      "status": "LOSS (SL Hit)",
+      "outcome_pnl": -1.0,
       "filled_at": "2026-09-25 15:47",
-      "notified_fill": true
+      "notified_fill": true,
+      "resolved_at": "2026-09-28 10:12",
+      "resolved_at_utc": "2026-09-28 10:12",
+      "resolved_ts": 1790590344061,
+      "notified_loss": true
     },
     {
       "id": 12,
@@ -968,8 +972,9 @@
         "reward_pct": "3.05%",
         "dist_pct": "1.1%"
       },
-      "status": "PENDING_LIMIT",
-      "outcome_pnl": 0.0
+      "status": "EXPIRED (Limit Unfilled)",
+      "outcome_pnl": 0.0,
+      "resolved_at": "2026-09-28 15:42"
     },
     {
       "id": 25,
@@ -1278,10 +1283,14 @@
         "reward_pct": "15.97%",
         "dist_pct": "1.7%"
       },
-      "status": "OPEN",
-      "outcome_pnl": 0.0,
+      "status": "LOSS (SL Hit)",
+      "outcome_pnl": -1.0,
       "filled_at": "2026-09-27 15:01",
-      "notified_fill": true
+      "notified_fill": true,
+      "resolved_at": "2026-09-28 10:12",
+      "resolved_at_utc": "2026-09-28 10:12",
+      "resolved_ts": 1790590346265,
+      "notified_loss": true
     },
     {
       "id": 32,
@@ -1307,13 +1316,17 @@
       "tp": 0.2507817908892457,
       "tp_str": "0.250782",
       "limit_setup": null,
-      "status": "OPEN",
-      "outcome_pnl": 0.0,
+      "status": "LOSS (SL Hit)",
+      "outcome_pnl": -1.0,
       "binance_order_id": 16941828123,
       "binance_sl_order_id": 4000001929507482,
       "executed_live": true,
       "executed_margin": 2.0316865167680835,
-      "executed_qty": 92.0
+      "executed_qty": 92.0,
+      "resolved_at": "2026-09-28 10:12",
+      "resolved_at_utc": "2026-09-28 10:12",
+      "resolved_ts": 1790590346870,
+      "notified_loss": true
     },
     {
       "id": 33,
@@ -1348,5 +1361,5 @@
       "executed_qty": 892.0
     }
   ],
-  "net_pnl_usdt": -1.14
+  "net_pnl_usdt": 3.16
 }
