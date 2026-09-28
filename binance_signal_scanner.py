@@ -3,6 +3,8 @@ import requests
 import json
 import math
 import os
+import re
+import html
 from datetime import datetime, timezone
 from concurrent.futures import ThreadPoolExecutor
 
@@ -19,11 +21,9 @@ FEE_BUFFER_PCT = 0.002            # 0.2% round-trip exchange fee buffer for True
 
 BINANCE_BASES = [
     "https://fapi.binance.com/fapi/v1",
-    "https://data-api.binance.vision/api/v3",
-    "https://api.binance.com/api/v3",
-    "https://api1.binance.com/api/v3",
-    "https://api2.binance.com/api/v3",
-    "https://api3.binance.com/api/v3"
+    "https://fapi1.binance.com/fapi/v1",
+    "https://fapi2.binance.com/fapi/v1",
+    "https://fapi3.binance.com/fapi/v1"
 ]
 BASE_URL = BINANCE_BASES[0]
 HEADERS = {
@@ -732,6 +732,73 @@ def get_4h_macro_bias(symbol):
         "reason": f"4H 20/50 EMA: {'Bullish' if e20 > e50 else 'Bearish'} | 4H RSI: {rsi_4h:.1f}"
     }
 
+def detect_15m_choch(klines_15m):
+    if not klines_15m or len(klines_15m) < 20:
+        return {"has_bullish_choch": False, "has_bearish_choch": False, "status": "Insufficient 15M Data"}
+    highs = [float(k[2]) for k in klines_15m]
+    lows = [float(k[3]) for k in klines_15m]
+    closes = [float(k[4]) for k in klines_15m]
+    current_price = closes[-1]
+    
+    recent_high = max(highs[-12:-1])
+    recent_low = min(lows[-12:-1])
+    
+    has_bullish_choch = current_price > recent_high
+    has_bearish_choch = current_price < recent_low
+    return {
+        "has_bullish_choch": has_bullish_choch,
+        "has_bearish_choch": has_bearish_choch,
+        "recent_high": recent_high,
+        "recent_low": recent_low,
+        "status": "15M Bullish CHoCH 🟢" if has_bullish_choch else ("15M Bearish CHoCH 🔴" if has_bearish_choch else "15M Range")
+    }
+
+def detect_5m_choch(klines_5m):
+    if not klines_5m or len(klines_5m) < 15:
+        return {"has_bullish_choch": False, "has_bearish_choch": False, "status": "Insufficient 5M Data"}
+    highs = [float(k[2]) for k in klines_5m]
+    lows = [float(k[3]) for k in klines_5m]
+    closes = [float(k[4]) for k in klines_5m]
+    current_price = closes[-1]
+    
+    recent_high = max(highs[-8:-1])
+    recent_low = min(lows[-8:-1])
+    
+    has_bullish_choch = current_price > recent_high
+    has_bearish_choch = current_price < recent_low
+    return {
+        "has_bullish_choch": has_bullish_choch,
+        "has_bearish_choch": has_bearish_choch,
+        "recent_high": recent_high,
+        "recent_low": recent_low,
+        "status": "5M Bullish CHoCH 🟢" if has_bullish_choch else ("5M Bearish CHoCH 🔴" if has_bearish_choch else "5M Range")
+    }
+
+def get_futures_oi_and_funding(symbol):
+    funding_pct = 0.0
+    oi_val = 0.0
+    try:
+        url_f = f"https://fapi.binance.com/fapi/v1/fundingRate?symbol={symbol}&limit=1"
+        res_f = session.get(url_f, timeout=4)
+        if res_f.status_code == 200:
+            d = res_f.json()
+            if d and len(d) > 0:
+                funding_pct = float(d[0].get("fundingRate", 0.0)) * 100
+                
+        url_oi = f"https://fapi.binance.com/fapi/v1/openInterest?symbol={symbol}"
+        res_oi = session.get(url_oi, timeout=4)
+        if res_oi.status_code == 200:
+            d_oi = res_oi.json()
+            oi_val = float(d_oi.get("openInterest", 0.0))
+    except Exception:
+        pass
+    return {
+        "funding_pct": round(funding_pct, 4),
+        "open_interest": oi_val,
+        "is_funding_excessive_long": funding_pct > 0.05,
+        "is_funding_excessive_short": funding_pct < -0.05
+    }
+
 def analyze_symbol(symbol, anchored_signal=None, btc_sentiment=None, session_info=None):
     daily_klines = get_klines(symbol, interval="1d", limit=100)
     klines_1h = get_klines(symbol, interval="1h", limit=80)
@@ -763,6 +830,13 @@ def analyze_symbol(symbol, anchored_signal=None, btc_sentiment=None, session_inf
     
     # 4H Macro Bias
     mtf_4h = get_4h_macro_bias(symbol)
+    
+    # 15M & 5M Sniper Confluence & Open Interest / Funding Rate Scraper
+    klines_15m = get_klines(symbol, interval="15m", limit=40)
+    klines_5m = get_klines(symbol, interval="5m", limit=30)
+    choch_15m = detect_15m_choch(klines_15m)
+    choch_5m = detect_5m_choch(klines_5m)
+    derivatives_info = get_futures_oi_and_funding(symbol)
     
     ema_20_series = calculate_ema(close_prices, 20)
     ema_50_series = calculate_ema(close_prices, 50)
@@ -901,6 +975,13 @@ def analyze_symbol(symbol, anchored_signal=None, btc_sentiment=None, session_inf
 
         reasons.append(f"📊 RSI Indicator: 1D ({rsi_daily:.1f}) | 1H ({rsi_1h:.1f})")
         reasons.append(f"📐 Volatility Safety: ATR (1.2x) Stop Offset ${fmt_price(1.2 * atr_1h)}")
+        c15_status = choch_15m.get("status", "15M Range") if choch_15m else "15M Range"
+        c5_status = choch_5m.get("status", "5M Range") if choch_5m else "5M Range"
+        reasons.append(f"⚡ 15M/5M Sniper Confirmation: {c15_status} | {c5_status}")
+
+        f_rate = derivatives_info.get("funding_pct", 0.0) if derivatives_info else 0.0
+        oi_val = derivatives_info.get("open_interest", 0.0) if derivatives_info else 0.0
+        reasons.append(f"🪙 Derivatives Flow: Funding Rate {f_rate:+.4f}% | Open Interest {oi_val:,.0f}")
 
     # =========================================================================
     # CASE 2: NEW POTENTIAL SIGNALS (Scan Fresh Setups)
@@ -1140,55 +1221,76 @@ def analyze_symbol(symbol, anchored_signal=None, btc_sentiment=None, session_inf
                     if (bear_ob_1h['bottom'] <= b_bear_4h['top'] and bear_ob_1h['top'] >= b_bear_4h['bottom']):
                         reasons.append(f"🔥 Nested OB Confluence: 1H Supply OB is Nested inside 4H Macro OB [${fmt_price(b_bear_4h['bottom'])} - ${fmt_price(b_bear_4h['top'])}]")
 
-        # Check for Pending Limit Retest on fresh signals
-        if signal_type == "BUY / LONG" and bull_ob_1h and bull_ob_1h['top'] < entry:
-            dist_to_ob_pct = ((entry - bull_ob_1h['top']) / entry) * 100
-            if dist_to_ob_pct >= 2.0:
-                l_entry = bull_ob_1h['top']
-                l_sl = sl
-                l_risk = l_entry - l_sl
-                l_tp1 = l_entry + (l_risk * 1.5)
-                l_tp2 = l_entry + (l_risk * 2.0)
-                l_tp = l_entry + (l_risk * 3.0)
-                limit_setup = {
-                    "limit_entry": fmt_price(l_entry),
-                    "raw_limit_entry": l_entry,
-                    "limit_sl": fmt_price(l_sl),
-                    "raw_limit_sl": l_sl,
-                    "limit_tp1": fmt_price(l_tp1),
-                    "raw_limit_tp1": l_tp1,
-                    "limit_tp2": fmt_price(l_tp2),
-                    "raw_limit_tp2": l_tp2,
-                    "limit_tp": fmt_price(l_tp),
-                    "raw_limit_tp": l_tp,
-                    "risk_pct": f"{((l_risk / l_entry) * 100):.2f}%",
-                    "reward_pct": f"{(((l_tp - l_entry) / l_entry) * 100):.2f}%",
-                    "dist_pct": f"{dist_to_ob_pct:.1f}%"
-                }
-        elif signal_type == "SELL / SHORT" and bear_ob_1h and bear_ob_1h['bottom'] > entry:
-            dist_to_ob_pct = ((bear_ob_1h['bottom'] - entry) / entry) * 100
-            if dist_to_ob_pct >= 2.0:
-                l_entry = bear_ob_1h['bottom']
-                l_sl = sl
-                l_risk = l_sl - l_entry
-                l_tp1 = l_entry - (l_risk * 1.5)
-                l_tp2 = l_entry - (l_risk * 2.0)
-                l_tp = l_entry - (l_risk * 3.0)
-                limit_setup = {
-                    "limit_entry": fmt_price(l_entry),
-                    "raw_limit_entry": l_entry,
-                    "limit_sl": fmt_price(l_sl),
-                    "raw_limit_sl": l_sl,
-                    "limit_tp1": fmt_price(l_tp1),
-                    "raw_limit_tp1": l_tp1,
-                    "limit_tp2": fmt_price(l_tp2),
-                    "raw_limit_tp2": l_tp2,
-                    "limit_tp": fmt_price(l_tp),
-                    "raw_limit_tp": l_tp,
-                    "risk_pct": f"{((l_risk / l_entry) * 100):.2f}%",
-                    "reward_pct": f"{(((l_entry - l_tp) / l_entry) * 100):.2f}%",
-                    "dist_pct": f"{dist_to_ob_pct:.1f}%"
-                }
+        # Check for Pending Limit Retest on fresh signals (FVG 50% Equilibrium / OTE Retest)
+        if signal_type == "BUY / LONG":
+            target_limit_price = None
+            if bull_fvg_1h and bull_fvg_1h['bottom'] < entry:
+                target_limit_price = bull_fvg_1h['bottom'] + 0.50 * (bull_fvg_1h['top'] - bull_fvg_1h['bottom'])
+            elif bull_ob_1h and bull_ob_1h['top'] < entry:
+                target_limit_price = bull_ob_1h['top']
+            
+            if target_limit_price and target_limit_price < entry:
+                dist_to_ob_pct = ((entry - target_limit_price) / entry) * 100
+                if dist_to_ob_pct >= 0.3:
+                    l_entry = target_limit_price
+                    l_sl = sl
+                    l_risk = l_entry - l_sl
+                    if l_risk > 0:
+                        l_tp1 = l_entry + (l_risk * 1.5)
+                        l_tp2 = l_entry + (l_risk * 2.5)
+                        l_tp = l_entry + (l_risk * 4.0)
+                        limit_setup = {
+                            "limit_entry": fmt_price(l_entry),
+                            "raw_limit_entry": l_entry,
+                            "limit_sl": fmt_price(l_sl),
+                            "raw_limit_sl": l_sl,
+                            "limit_tp1": fmt_price(l_tp1),
+                            "raw_limit_tp1": l_tp1,
+                            "limit_tp2": fmt_price(l_tp2),
+                            "raw_limit_tp2": l_tp2,
+                            "limit_tp": fmt_price(l_tp),
+                            "raw_limit_tp": l_tp,
+                            "risk_pct": f"{((l_risk / l_entry) * 100):.2f}%",
+                            "reward_pct": f"{(((l_tp - l_entry) / l_entry) * 100):.2f}%",
+                            "dist_pct": f"{dist_to_ob_pct:.1f}%"
+                        }
+        elif signal_type == "SELL / SHORT":
+            target_limit_price = None
+            if bear_fvg_1h and bear_fvg_1h['top'] > entry:
+                target_limit_price = bear_fvg_1h['top'] - 0.50 * (bear_fvg_1h['top'] - bear_fvg_1h['bottom'])
+            elif bear_ob_1h and bear_ob_1h['bottom'] > entry:
+                target_limit_price = bear_ob_1h['bottom']
+            
+            if target_limit_price and target_limit_price > entry:
+                dist_to_ob_pct = ((target_limit_price - entry) / entry) * 100
+                if dist_to_ob_pct >= 0.3:
+                    l_entry = target_limit_price
+                    l_sl = sl
+                    l_risk = l_sl - l_entry
+                    if l_risk > 0:
+                        l_tp1 = l_entry - (l_risk * 1.5)
+                        l_tp2 = l_entry - (l_risk * 2.5)
+                        l_tp = l_entry - (l_risk * 4.0)
+                        limit_setup = {
+                            "limit_entry": fmt_price(l_entry),
+                            "raw_limit_entry": l_entry,
+                            "limit_sl": fmt_price(l_sl),
+                            "raw_limit_sl": l_sl,
+                            "limit_tp1": fmt_price(l_tp1),
+                            "raw_limit_tp1": l_tp1,
+                            "limit_tp2": fmt_price(l_tp2),
+                            "raw_limit_tp2": l_tp2,
+                            "limit_tp": fmt_price(l_tp),
+                            "raw_limit_tp": l_tp,
+                            "risk_pct": f"{((l_risk / l_entry) * 100):.2f}%",
+                            "reward_pct": f"{(((l_entry - l_tp) / l_entry) * 100):.2f}%",
+                            "dist_pct": f"{dist_to_ob_pct:.1f}%"
+                        }
+
+        if choch_15m and choch_5m and not any("15M/5M" in str(r) for r in reasons):
+            reasons.append(f"⚡ 15M/5M Sniper Confirmation: {choch_15m['status']} | {choch_5m['status']}")
+        if derivatives_info and derivatives_info.get("funding_pct") is not None and not any("Funding Rate" in str(r) for r in reasons):
+            reasons.append(f"🪙 Derivatives Flow: Funding Rate {derivatives_info['funding_pct']:+.4f}% | Open Interest {derivatives_info['open_interest']:,.0f}")
 
         if signal_type in ["BUY / LONG", "SELL / SHORT"]:
             if limit_setup:
@@ -1744,15 +1846,15 @@ def record_new_signals_to_history(actionable_signals, history_data, open_symbols
 def get_top_pairs(limit=None):
     if limit is None:
         try:
-            limit = int(os.environ.get("SCAN_PAIRS_LIMIT", 100))
+            limit = int(os.environ.get("SCAN_PAIRS_LIMIT", 150))
         except Exception:
-            limit = 100
+            limit = 150
     try:
         # Prefer USDT-M Futures 24hr tickers so 100% of symbols are tradable on Futures
         url = "https://fapi.binance.com/fapi/v1/ticker/24hr"
         resp = session.get(url, timeout=10)
         if resp.status_code != 200:
-            url = "https://api.binance.com/api/v3/ticker/24hr"
+            url = "https://fapi1.binance.com/fapi/v1/ticker/24hr"
             resp = session.get(url, timeout=10)
 
         if resp.status_code == 200:
@@ -1773,14 +1875,23 @@ def get_top_pairs(limit=None):
                     continue
                 usdt_pairs.append(t)
 
+            # 1. Top Volume Leaders (e.g. Top 150)
             usdt_pairs.sort(key=lambda x: float(x.get('quoteVolume', 0)), reverse=True)
-            top_symbols = [t['symbol'] for t in usdt_pairs[:limit]]
-            if len(top_symbols) >= 30:
-                min_vol = float(usdt_pairs[len(top_symbols)-1].get('quoteVolume', 0)) / 1e6
-                print(f"[+] Selected Top {len(top_symbols)} Pure Crypto Futures Pairs by 24h Volume (Min Vol: ${min_vol:.1f}M)")
-                return top_symbols
+            top_volume_symbols = [t['symbol'] for t in usdt_pairs[:limit]]
+
+            # 2. Top 20 Price & Volume Gainers/Movers of the day
+            usdt_pairs_by_gainer = sorted(usdt_pairs, key=lambda x: abs(float(x.get('priceChangePercent', 0))), reverse=True)
+            top_gainer_symbols = [t['symbol'] for t in usdt_pairs_by_gainer[:20]]
+
+            # 3. Merge & Deduplicate
+            combined_symbols = list(dict.fromkeys(top_volume_symbols + top_gainer_symbols))
+
+            if len(combined_symbols) >= 30:
+                min_vol = float(usdt_pairs[min(limit-1, len(usdt_pairs)-1)].get('quoteVolume', 0)) / 1e6
+                print(f"[+] Selected {len(combined_symbols)} Pure Crypto Futures Pairs ({len(top_volume_symbols)} Top Volume [Min: ${min_vol:.1f}M] + Top 20 Gainers/Movers)")
+                return combined_symbols
     except Exception as e:
-        print(f"[!] Warning: Dynamic Top 150 fetch failed ({e}). Using curated list.")
+        print(f"[!] Warning: Dynamic Top {limit} fetch failed ({e}). Using curated list.")
 
     return [
         "BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT",
@@ -1825,9 +1936,103 @@ def get_btc_macro_sentiment():
         "reason": f"BTC 3h: {change_3h:+.2f}% | 1H RSI: {rsi:.1f} | 20 EMA: ${ema20:,.0f}"
     }
 
+NEWS_BUFFER_MINUTES = 45
+
+CURATED_NEWS_EVENTS = [
+    # September 2026
+    {"title": "🇺🇸 US Non-Farm Payrolls (NFP)", "impact": "HIGH", "time_utc": "2026-09-04 12:30:00", "currency": "USD"},
+    {"title": "🇺🇸 US CPI Inflation Rate (MoM/YoY)", "impact": "HIGH", "time_utc": "2026-09-11 12:30:00", "currency": "USD"},
+    {"title": "🇺🇸 US Producer Price Index (PPI)", "impact": "HIGH", "time_utc": "2026-09-12 12:30:00", "currency": "USD"},
+    {"title": "🏛️ FOMC Interest Rate Decision", "impact": "HIGH", "time_utc": "2026-09-16 18:00:00", "currency": "USD"},
+    {"title": "🎙️ Fed Chair Powell Press Conference", "impact": "HIGH", "time_utc": "2026-09-16 18:30:00", "currency": "USD"},
+    {"title": "🇺🇸 US Core PCE Price Index", "impact": "HIGH", "time_utc": "2026-09-25 12:30:00", "currency": "USD"},
+    {"title": "💼 US Unemployment Claims & GDP", "impact": "HIGH", "time_utc": "2026-09-28 12:30:00", "currency": "USD"},
+    
+    # October 2026
+    {"title": "💼 US Non-Farm Payrolls (NFP)", "impact": "HIGH", "time_utc": "2026-10-02 12:30:00", "currency": "USD"},
+    {"title": "🇺🇸 US CPI Inflation Rate", "impact": "HIGH", "time_utc": "2026-10-14 12:30:00", "currency": "USD"},
+    {"title": "🇺🇸 US Producer Price Index (PPI)", "impact": "HIGH", "time_utc": "2026-10-15 12:30:00", "currency": "USD"},
+    {"title": "🏛️ FOMC Interest Rate Decision", "impact": "HIGH", "time_utc": "2026-10-28 18:00:00", "currency": "USD"},
+    {"title": "🎙️ Fed Chair Powell Press Conference", "impact": "HIGH", "time_utc": "2026-10-28 18:30:00", "currency": "USD"},
+    
+    # November 2026
+    {"title": "💼 US Non-Farm Payrolls (NFP)", "impact": "HIGH", "time_utc": "2026-11-06 12:30:00", "currency": "USD"},
+    {"title": "🇺🇸 US CPI Inflation Rate", "impact": "HIGH", "time_utc": "2026-11-13 12:30:00", "currency": "USD"},
+    {"title": "🏛️ FOMC Interest Rate Decision", "impact": "HIGH", "time_utc": "2026-11-18 18:00:00", "currency": "USD"},
+    
+    # December 2026
+    {"title": "💼 US Non-Farm Payrolls (NFP)", "impact": "HIGH", "time_utc": "2026-12-04 12:30:00", "currency": "USD"},
+    {"title": "🇺🇸 US CPI Inflation Rate", "impact": "HIGH", "time_utc": "2026-12-11 12:30:00", "currency": "USD"},
+    {"title": "🏛️ FOMC Interest Rate Decision", "impact": "HIGH", "time_utc": "2026-12-16 18:00:00", "currency": "USD"}
+]
+
+def get_upcoming_economic_news():
+    now_utc = datetime.now(timezone.utc)
+    events = []
+    
+    for ev in CURATED_NEWS_EVENTS:
+        try:
+            dt = datetime.strptime(ev["time_utc"], "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
+            if now_utc - timedelta(days=2) <= dt <= now_utc + timedelta(days=14):
+                ts_ms = int(dt.timestamp() * 1000)
+                diff_sec = (dt - now_utc).total_seconds()
+                diff_mins = int(diff_sec // 60)
+                
+                time_str = dt.strftime("%b %d, %H:%M UTC")
+                
+                events.append({
+                    "title": ev["title"],
+                    "impact": ev["impact"],
+                    "currency": ev["currency"],
+                    "time_utc": ev["time_utc"],
+                    "timestamp": ts_ms,
+                    "time_str": time_str,
+                    "mins_away": diff_mins,
+                    "is_past": diff_sec < -NEWS_BUFFER_MINUTES * 60
+                })
+        except Exception:
+            pass
+            
+    events.sort(key=lambda x: x["timestamp"])
+    return events
+
+def evaluate_news_shield(events, buffer_minutes=NEWS_BUFFER_MINUTES):
+    now_utc = datetime.now(timezone.utc)
+    now_ts_ms = int(now_utc.timestamp() * 1000)
+    buffer_ms = buffer_minutes * 60 * 1000
+    
+    is_shield_active = False
+    active_event = None
+    block_until_str = ""
+    mins_remaining = 0
+    
+    for ev in events:
+        ev_ts = ev["timestamp"]
+        start_shield = ev_ts - buffer_ms
+        end_shield = ev_ts + buffer_ms
+        
+        if start_shield <= now_ts_ms <= end_shield:
+            is_shield_active = True
+            active_event = ev
+            end_dt = datetime.fromtimestamp(end_shield / 1000, tz=timezone.utc)
+            block_until_str = end_dt.strftime("%H:%M UTC")
+            mins_remaining = int((end_shield - now_ts_ms) / 60000)
+            break
+            
+    return {
+        "is_shield_active": is_shield_active,
+        "active_event": active_event,
+        "block_until_str": block_until_str,
+        "mins_remaining": mins_remaining,
+        "shield_status_str": "TRADES PAUSED (SHIELD ACTIVE)" if is_shield_active else "NORMAL TRADING",
+        "buffer_minutes": buffer_minutes
+    }
+
 def scan_all_pairs():
-    # 1. Get active Market Session
+    # 1. Get active Market Session & News Shield Status
     session_info = get_market_session()
+    upcoming_news = get_upcoming_economic_news()
+    news_shield = evaluate_news_shield(upcoming_news)
 
     # 2. Resolve open trades against latest candles & handle trailing stops
     history_data = check_and_resolve_open_trades()
@@ -1857,6 +2062,13 @@ def scan_all_pairs():
     elif circuit_breaker.get("is_defensive"):
         cb_txt = "🛡️ DEFENSIVE RESUME (5% Half-Risk Active)"
     print(f" Circuit Breaker: {cb_txt} [Today Losses: {circuit_breaker.get('losses_today', 0)}/{MAX_DAILY_HARD_STOP_LOSSES}]")
+    
+    news_txt = "🟢 NORMAL (No High-Impact News)"
+    if news_shield["is_shield_active"]:
+        act_ev = news_shield["active_event"]
+        news_txt = f"🛡️ SHIELD ACTIVE [{act_ev['title']}] (Paused until {news_shield['block_until_str']})"
+    print(f" News Safety Shield: {news_txt}")
+    
     print(f" Portfolio Heat: {len(open_symbols_before_scan)} / {MAX_ACTIVE_POSITIONS} Max Positions")
     print(f" Total Symbols to Scan: {len(pairs)} | Active Monitored: {len(open_signals_map)}")
     print(f" 🌐 BTC Macro Sentiment: {btc_sentiment['status']} ({btc_sentiment['reason']})")
@@ -1880,6 +2092,10 @@ def scan_all_pairs():
 
     actionable = [r for r in results if r["signal"] in ["BUY / LONG", "SELL / SHORT"]]
     watchlist = [r for r in results if r["signal"] == "WATCHLIST"]
+
+    if news_shield["is_shield_active"]:
+        print(f"[🛡️] News Shield Active: Pausing new trade executions for {news_shield['active_event']['title']}")
+        actionable = []
 
     # 5. Record brand new signals respecting Portfolio Heat & Circuit Breaker
     history = record_new_signals_to_history(actionable, history_data, open_symbols_before_scan)
@@ -1927,6 +2143,8 @@ def scan_all_pairs():
         "filter": "Institutional SMC 2.0: 4H MTF + FVG + Liquidity Sweep + ATR Stops (1:3 R:R)",
         "session": session_info,
         "circuit_breaker": history.get("circuit_breaker", {}),
+        "news_shield": news_shield,
+        "upcoming_news": upcoming_news,
         "btc_sentiment": btc_sentiment,
         "portfolio_heat": f"{len(open_symbols_before_scan)} / {MAX_ACTIVE_POSITIONS} Max",
         "active_count": len(actionable),
@@ -1999,6 +2217,47 @@ def generate_html_dashboard(data, output_path):
         cb_html = f'<span class="badge bg-info text-dark"><i class="fa-solid fa-shield-halved me-1"></i>🛡️ DEFENSIVE RESUME (5% Risk)</span>'
     else:
         cb_html = f'<span class="badge bg-success bg-opacity-25 text-success border border-success"><i class="fa-solid fa-shield-halved me-1"></i>ADAPTIVE SHIELD ACTIVE ({cb_losses}/3)</span>'
+
+    news_shield = data.get("news_shield", {})
+    upcoming_news = data.get("upcoming_news", [])
+    is_news_active = news_shield.get("is_shield_active", False)
+    news_active_event = news_shield.get("active_event")
+    
+    if is_news_active and news_active_event:
+        news_nav_html = f'<span class="badge bg-danger text-white border border-danger"><i class="fa-solid fa-hand me-1"></i>🛡️ NEWS SHIELD ACTIVE (Paused until {news_shield.get("block_until_str")})</span>'
+    else:
+        news_nav_html = f'<span class="badge bg-success bg-opacity-25 text-success border border-success"><i class="fa-solid fa-newspaper me-1"></i>NEWS GUARD ACTIVE (Normal)</span>'
+
+    news_rows = []
+    if upcoming_news:
+        for ev in upcoming_news[:5]:
+            mins = ev.get("mins_away", 0)
+            if mins < -45:
+                time_away_str = '<span class="badge bg-secondary opacity-50">Past Event</span>'
+                sys_action_str = '<span class="text-muted">Cleared</span>'
+            elif -45 <= mins <= 45:
+                time_away_str = f'<span class="badge bg-danger animate-pulse">🔥 ACTIVE NOW ({abs(mins)}m)</span>'
+                sys_action_str = '<span class="badge bg-danger text-white fw-bold"><i class="fa-solid fa-hand me-1"></i>🛡️ TRADES PAUSED</span>'
+            elif mins <= 180:
+                hours_away = round(mins / 60, 1)
+                time_away_str = f'<span class="badge bg-warning text-dark">In {hours_away} hrs ({mins}m)</span>'
+                sys_action_str = '<span class="badge bg-dark text-warning border border-warning">🛡️ Shield Scheduled</span>'
+            else:
+                days_away = round(mins / 1440, 1)
+                time_away_str = f'<span class="badge bg-dark border border-secondary text-info">In {days_away} days</span>'
+                sys_action_str = '<span class="text-success"><i class="fa-solid fa-check me-1"></i>Normal Execution</span>'
+
+            news_rows.append(f"""
+            <tr>
+                <td class="fw-bold text-white"><i class="fa-solid fa-newspaper text-warning me-2"></i>{ev.get('title')}</td>
+                <td class="text-warning font-monospace">{ev.get('time_str')}</td>
+                <td><span class="badge bg-danger text-white fw-bold"><i class="fa-solid fa-fire me-1"></i>{ev.get('impact')}</span></td>
+                <td><span class="badge bg-dark border border-secondary text-light">{ev.get('currency')}</span></td>
+                <td>{time_away_str}</td>
+                <td>{sys_action_str}</td>
+            </tr>
+            """)
+    news_rows_html = "".join(news_rows) if news_rows else '<tr><td colspan="6" class="text-center text-muted italic">No upcoming High-Impact economic events detected in calendar.</td></tr>'
 
     real_positions = data.get("real_positions") or []
     pos_count = len(real_positions)
@@ -2279,6 +2538,7 @@ def generate_html_dashboard(data, output_path):
                     <i class="fa-solid fa-fire text-danger me-1"></i> Heat: <strong>{heat_str}</strong>
                 </span>
                 {cb_html}
+                {news_nav_html}
                 <span class="badge bg-dark border border-secondary text-light">
                     <i class="fa-brands fa-bitcoin text-warning me-1"></i> BTC: <strong class="ms-1">{btc_status}</strong>
                 </span>
@@ -2321,6 +2581,49 @@ def generate_html_dashboard(data, output_path):
                 </div>
             </div>
         </div>
+
+        <!-- Section: High-Impact Economic News & Shield Widget -->
+        <div class="row g-3 mb-4">
+            <div class="col-12">
+                <div class="stat-card" style="border-left: 4px solid {'#f6465d' if is_news_active else '#0ecb81'};">
+                    <div class="d-flex align-items-center justify-content-between flex-wrap gap-2 mb-3">
+                        <div>
+                            <h5 class="fw-bold mb-1 text-white d-flex align-items-center">
+                                <i class="fa-solid fa-newspaper text-warning me-2"></i>Upcoming High-Impact Economic News & Shield Status
+                                <span class="badge {'bg-danger text-white ms-2' if is_news_active else 'bg-success bg-opacity-25 text-success ms-2'}" style="font-size: 0.8rem;">
+                                    {'🛡️ SHIELD ACTIVE (TRADES PAUSED)' if is_news_active else '🟢 NORMAL TRADING'}
+                                </span>
+                            </h5>
+                            <small class="text-muted">Automatic ±45 Minute Protection Window around US High-Impact Events (CPI, FOMC, NFP, PPI)</small>
+                        </div>
+                        <div>
+                            <span class="badge bg-dark border border-secondary text-info p-2" style="font-size: 0.85rem;">
+                                <i class="fa-solid fa-shield-cat me-1"></i>Shield Status: <strong class="{'text-warning' if is_news_active else 'text-success'}">{'PAUSED until ' + news_shield.get('block_until_str', '') if is_news_active else 'NO NEWS BLOCK ACTIVE'}</strong>
+                            </span>
+                        </div>
+                    </div>
+
+                    <div class="table-responsive">
+                        <table class="table table-dark table-hover align-middle mb-0" style="font-size: 0.85rem;">
+                            <thead>
+                                <tr>
+                                    <th>Event Title</th>
+                                    <th>Release Time (UTC)</th>
+                                    <th>Impact</th>
+                                    <th>Currency</th>
+                                    <th>Time Status</th>
+                                    <th>System Execution Action</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {news_rows_html}
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        </div>
+
 
         <!-- Section: Active DMD Positions (Live Execution) -->
         <div class="mb-4" id="live-positions-section">
@@ -2615,7 +2918,7 @@ def generate_html_dashboard(data, output_path):
                                     <div class="h4 mb-0 fw-bold text-white live-price-val" id="live-${{sig.symbol}}">$${{sig.current_price}}</div>
                                 </div>
                                 <div class="text-end border-start border-secondary ps-3">
-                                    <div class="metric-title">${{sig.limit_setup ? 'Market (Now)' : 'Signal Entry'}}</div>
+                                    <div class="metric-title">Signal Entry</div>
                                     <div class="h5 mb-0 fw-bold val-yellow">$${{sig.entry}}</div>
                                     <small class="fw-bold live-diff-val" id="diff-${{sig.symbol}}">0.00%</small>
                                 </div>
@@ -2895,11 +3198,11 @@ def generate_html_dashboard(data, output_path):
                 const controller = new AbortController();
                 const timeoutId = setTimeout(() => controller.abort(), 2500);
                 try {{
-                    resp = await fetch('https://data-api.binance.vision/api/v3/ticker/price', {{ signal: controller.signal }});
+                    resp = await fetch('https://fapi.binance.com/fapi/v1/ticker/price', {{ signal: controller.signal }});
                 }} catch (e) {{}}
                 if (!resp || !resp.ok) {{
                     try {{
-                        resp = await fetch('https://api.binance.com/api/v3/ticker/price', {{ signal: controller.signal }});
+                        resp = await fetch('https://fapi1.binance.com/fapi/v1/ticker/price', {{ signal: controller.signal }});
                     }} catch (e) {{}}
                 }}
                 clearTimeout(timeoutId);
@@ -2916,7 +3219,8 @@ def generate_html_dashboard(data, output_path):
                 const active = EMBEDDED_DATA.active_signals || [];
                 active.forEach(sig => {{
                     const liveP = priceMap[sig.symbol];
-                    if (liveP !== undefined) {{
+                    const entry = sig.raw_entry;
+                    if (liveP !== undefined && entry > 0 && Math.abs((liveP - entry) / entry) <= 0.40) {{
                         const liveEl = document.getElementById(`live-${{sig.symbol}}`);
                         const diffEl = document.getElementById(`diff-${{sig.symbol}}`);
                         const watchEl = document.getElementById(`watch-${{sig.symbol}}`);

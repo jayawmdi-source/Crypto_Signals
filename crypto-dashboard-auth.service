@@ -1,0 +1,15 @@
+[Unit]
+Description=Binance SMC Dashboard Auth Web Server
+After=network.target
+
+[Service]
+Type=simple
+User=root
+Environment="PORT=80"
+WorkingDirectory=/home/opc/Crypto_Signals
+ExecStart=/usr/bin/python3 /home/opc/Crypto_Signals/dashboard_auth_server.py
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

@@ -58,9 +58,8 @@ while true; do
     
     # Auto-pull only if new commits exist on GitHub (never wipe runtime/config files)
     git fetch origin main -q 2>/dev/null
-    LOCAL=$(git rev-parse HEAD 2>/dev/null)
-    REMOTE=$(git rev-parse origin/main 2>/dev/null)
-    if [ -n "$LOCAL" ] && [ -n "$REMOTE" ] && [ "$LOCAL" != "$REMOTE" ]; then
+    BEHIND=$(git log HEAD..origin/main --oneline 2>/dev/null | wc -l)
+    if [ "$BEHIND" -gt 0 ]; then
         echo "[+] New code update detected from GitHub! Syncing..."
         [ -f "latest_signals.json" ] && cp latest_signals.json /tmp/_ls.json 2>/dev/null
         [ -f "dashboard.html" ] && cp dashboard.html /tmp/_db.html 2>/dev/null

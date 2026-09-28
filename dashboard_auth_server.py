@@ -5,10 +5,11 @@ import json
 import time
 import gzip
 import urllib.parse
+import hmac
 from http.cookies import SimpleCookie
 from http.server import ThreadingHTTPServer, SimpleHTTPRequestHandler
 
-PORT = 80
+PORT = int(os.environ.get("PORT", 8080))
 DIRECTORY = os.path.dirname(os.path.abspath(__file__))
 
 # Native Zero-Dependency .env Loader
@@ -95,7 +96,6 @@ FORBIDDEN_FILES = {
     "binance_api_config.json",
     "telegram_config.json",
     ".sessions.json",
-    "trade_history.json",
     ".env",
     ".gitignore",
     "requirements.txt"
@@ -105,7 +105,8 @@ FORBIDDEN_EXTENSIONS = {
 }
 
 def is_file_forbidden(path_str):
-    clean = path_str.split("?")[0].lstrip("/").replace("\\", "/")
+    decoded_path = urllib.parse.unquote(path_str)
+    clean = decoded_path.split("?")[0].lstrip("/").replace("\\", "/")
     # Prevent directory traversal attacks
     if ".." in clean:
         return True
@@ -398,9 +399,9 @@ class SecureDashboardHandler(SimpleHTTPRequestHandler):
             return
 
         # 5. Inject Logout button into HTML files
-        clean_path = self.path.split("?")[0]
+        clean_path = urllib.parse.unquote(self.path.split("?")[0])
         if clean_path in ["/", "/index.html", "/dashboard.html"]:
-            target_file = os.path.join(DIRECTORY, "index.html" if clean_path == "/" else clean_path.lstrip("/"))
+            target_file = os.path.join(DIRECTORY, "dashboard.html" if os.path.exists(os.path.join(DIRECTORY, "dashboard.html")) else "index.html")
             if os.path.exists(target_file):
                 try:
                     with open(target_file, "r", encoding="utf-8") as f:
@@ -452,7 +453,7 @@ class SecureDashboardHandler(SimpleHTTPRequestHandler):
             username = fields.get("username", [""])[0].strip()
             password = fields.get("password", [""])[0].strip()
 
-            if username == AUTH_USER and password == AUTH_PASS:
+            if hmac.compare_digest(username, AUTH_USER) and hmac.compare_digest(password, AUTH_PASS):
                 clear_failed_attempts(client_ip)
                 token = uuid.uuid4().hex
                 SESSIONS[token] = username
