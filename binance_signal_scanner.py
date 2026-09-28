@@ -1461,7 +1461,7 @@ def check_and_resolve_open_trades(news_shield=None):
     today_losses = 0
     last_loss_ts = 0
     for s in existing_signals:
-        if "LOSS" in s.get("status", ""):
+        if s.get("executed_live") and "LOSS" in s.get("status", ""):
             res_date = (s.get("resolved_at_utc") or s.get("resolved_at", ""))[:10]
             if res_date == today_utc:
                 today_losses += 1
@@ -1815,17 +1815,23 @@ def check_and_resolve_open_trades(news_shield=None):
 def recalculate_history_stats(history_data):
     existing_signals = history_data.get("signals", [])
     active_statuses = ["OPEN", "TP1_BE_RUNNING", "TP2_LOCKED_RUNNING", "PENDING_LIMIT"]
-    closed = [s for s in existing_signals if s.get("status") not in active_statuses]
-    wins = len([s for s in existing_signals if "WIN" in s.get("status", "")])
-    losses = len([s for s in existing_signals if "LOSS" in s.get("status", "")])
-    pending = len([s for s in existing_signals if s.get("status") in active_statuses])
+    
+    # Strictly isolate real trades executed live on Binance Futures
+    live_signals = [s for s in existing_signals if s.get("executed_live")]
+    
+    # Target signals for primary dashboard statistics: strictly live Binance trades if any exist
+    target_signals = live_signals if live_signals else existing_signals
+    closed = [s for s in target_signals if s.get("status") not in active_statuses]
+    wins = len([s for s in closed if "WIN" in s.get("status", "")])
+    losses = len([s for s in closed if "LOSS" in s.get("status", "")])
+    pending = len([s for s in target_signals if s.get("status") in active_statuses])
     total_closed = len(closed)
     win_rate = (wins / total_closed * 100) if total_closed > 0 else 0.0
-    net_r = round(sum(s.get("outcome_pnl", 0.0) for s in existing_signals), 1)
+    net_r = round(sum(s.get("outcome_pnl", 0.0) for s in closed), 1)
 
     # Calculate Realized Net PnL in USDT strictly for trades tracked by this bot
     realized_usdt = 0.0
-    first_sig_ts = min([s.get("timestamp", 0) for s in existing_signals]) if existing_signals else 0
+    first_sig_ts = min([s.get("timestamp", 0) for s in target_signals]) if target_signals else 0
     
     if auto_trader and auto_trader.is_configured() and first_sig_ts > 0:
         try:
@@ -1850,7 +1856,7 @@ def recalculate_history_stats(history_data):
 
     history_data.update({
         "updated_at": datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-        "total_signals": len(existing_signals),
+        "total_signals": len(target_signals),
         "total_closed": total_closed,
         "wins": wins,
         "losses": losses,
@@ -2786,34 +2792,34 @@ def generate_html_dashboard(data, output_path):
             </div>
         </div>
 
-        <!-- Live Performance Bar -->
+        <!-- Live Real Performance Bar (Strictly Real Binance Executed Trades) -->
         <div class="row g-3 mb-4">
             <div class="col-12 col-md-3">
                 <div class="stat-card">
-                    <div class="stat-title"><i class="fa-solid fa-trophy text-warning me-1"></i> Closed Win Rate</div>
+                    <div class="stat-title"><i class="fa-solid fa-trophy text-warning me-1"></i> Real Live Win Rate</div>
                     <div class="stat-value val-yellow" id="stat-win-rate">{win_rate}%</div>
-                    <small class="text-muted">Break-even at 1:3 R:R is 25.0%</small>
+                    <small class="text-muted">Binance Executed ({wins}W / {losses}L)</small>
                 </div>
             </div>
             <div class="col-12 col-md-3">
                 <div class="stat-card">
-                    <div class="stat-title"><i class="fa-solid fa-check-double text-success me-1"></i> Total Wins</div>
+                    <div class="stat-title"><i class="fa-solid fa-check-double text-success me-1"></i> Real Live Wins</div>
                     <div class="stat-value val-green" id="stat-wins">{wins}</div>
-                    <small class="text-muted">Scaled Exits (+3.0R TP3 & Locked +1.5R)</small>
+                    <small class="text-muted">Scaled Exits (+3.0R & Trailed +1.5R)</small>
                 </div>
             </div>
             <div class="col-12 col-md-3">
                 <div class="stat-card">
-                    <div class="stat-title"><i class="fa-solid fa-xmark text-danger me-1"></i> Losses (SL Hit)</div>
+                    <div class="stat-title"><i class="fa-solid fa-xmark text-danger me-1"></i> Real Live Losses</div>
                     <div class="stat-value val-red" id="stat-losses">{losses}</div>
-                    <small class="text-muted">Controlled Structural Risk (-1.0R)</small>
+                    <small class="text-muted">Binance Hardware SL Hit (-1.0R)</small>
                 </div>
             </div>
             <div class="col-12 col-md-3">
                 <div class="stat-card">
                     <div class="stat-title"><i class="fa-solid fa-scale-balanced text-info me-1"></i> Net Realized Return ($ USDT)</div>
                     <div class="stat-value {net_usdt_color}" id="stat-net-r">{net_usdt_display} <span style="font-size: 0.95rem;" class="text-info font-monospace">({'+' if net_r >= 0 else ''}{net_r} R)</span></div>
-                    <small class="text-muted">Realized Cumulative PnL</small>
+                    <small class="text-muted">Binance Realized Cash PnL</small>
                 </div>
             </div>
         </div>
@@ -2883,9 +2889,9 @@ def generate_html_dashboard(data, output_path):
         <div class="mt-5 mb-5" id="history-section">
             <div class="d-flex align-items-center justify-content-between mb-3">
                 <h4 class="fw-bold mb-0 text-white">
-                    <i class="fa-solid fa-clock-rotate-left text-warning me-2"></i>Trade Lifecycle Ledger & History
+                    <i class="fa-solid fa-clock-rotate-left text-warning me-2"></i>Real Live Trade Execution Ledger (Binance Futures)
                 </h4>
-                <span class="badge bg-dark border border-secondary text-muted">Multi-Stage Trailing Break-Even Ledger</span>
+                <span class="badge bg-dark border border-secondary text-success">Verified Binance Futures Executions Only</span>
             </div>
             <div class="table-responsive table-dark-custom">
                 <table class="table mb-0">
@@ -3273,7 +3279,9 @@ def generate_html_dashboard(data, output_path):
             const histBody = document.getElementById('history-body');
             if (histBody) {{
                 histBody.innerHTML = "";
-                const signals = (data.history && data.history.signals) ? data.history.signals : [];
+                const allSignals = (data.history && data.history.signals) ? data.history.signals : [];
+                const liveSignals = allSignals.filter(s => s.executed_live);
+                const signals = liveSignals.length > 0 ? liveSignals : allSignals;
                 if (signals.length === 0) {{
                     histBody.innerHTML = `
                         <tr>
