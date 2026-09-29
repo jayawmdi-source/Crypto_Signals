@@ -2015,11 +2015,27 @@ def get_top_pairs(limit=None):
             data = resp.json()
             real_b_cryptos = {'BNBUSDT', 'DGBUSDT', 'TRBUSDT', 'CKBUSDT', 'SHIBUSDT', 'MOBUSDT', 'PHBUSDT', 'VIBUSDT', 'AMBUSDT', 'ARBUSDT', 'BBUSDT', 'YBUSDT', 'STXUSDT'}
             stables_and_junk = {'USDCUSDT', 'FDUSDUSDT', 'TUSDUSDT', 'EURUSDT', 'USDPUSDT', 'AEURUSDT', 'USD1USDT', 'RLUSDUSDT', 'XUSDUSDT', 'USDSBUSDT', 'BFDUSDT', 'EURIUSDT', 'USDEUSDT'}
+            non_crypto_exclusions = {'NATGASUSDT', 'XAUUSDT', 'XAGUSDT', 'CLUSDT', 'SPCXUSDT', 'SOXLUSDT', 'SOXSUSDT', 'INTCUSDT', 'SAMSUNGUSDT', 'MUUSDT', 'SNDKUSDT', 'SKHYNIXUSDT', 'KORUUSDT', 'BZUSDT', 'CRCLUSDT', 'SNXXUSDT'}
             
+            # Fetch official Binance exchangeInfo to strictly verify underlyingType == 'COIN' (100% Pure Crypto)
+            pure_crypto_set = set()
+            try:
+                ex_resp = session.get("https://fapi.binance.com/fapi/v1/exchangeInfo", timeout=8)
+                if ex_resp.status_code == 200:
+                    for s in ex_resp.json().get("symbols", []):
+                        if s.get("underlyingType") == "COIN" and s.get("status") == "TRADING" and s.get("contractType") == "PERPETUAL":
+                            pure_crypto_set.add(s.get("symbol"))
+            except Exception as _ex_err:
+                pass
+
             usdt_pairs = []
             for t in data:
                 sym = t.get('symbol', '')
                 if not sym.endswith('USDT'):
+                    continue
+                if pure_crypto_set and sym not in pure_crypto_set:
+                    continue
+                if sym in non_crypto_exclusions:
                     continue
                 if any(x in sym for x in ['UPUSDT', 'DOWNUSDT', 'BULLUSDT', 'BEARUSDT', '_']):
                     continue
@@ -2029,11 +2045,11 @@ def get_top_pairs(limit=None):
                     continue
                 usdt_pairs.append(t)
 
-            # 1. Top Volume Leaders (e.g. Top 150)
+            # 1. Top 150 Pure Crypto Volume Leaders
             usdt_pairs.sort(key=lambda x: float(x.get('quoteVolume', 0)), reverse=True)
             top_volume_symbols = [t['symbol'] for t in usdt_pairs[:limit]]
 
-            # 2. Top 20 Price & Volume Gainers/Movers of the day
+            # 2. Top 20 Pure Crypto Price & Volume Gainers/Movers of the day
             usdt_pairs_by_gainer = sorted(usdt_pairs, key=lambda x: abs(float(x.get('priceChangePercent', 0))), reverse=True)
             top_gainer_symbols = [t['symbol'] for t in usdt_pairs_by_gainer[:20]]
 
@@ -2042,7 +2058,7 @@ def get_top_pairs(limit=None):
 
             if len(combined_symbols) >= 30:
                 min_vol = float(usdt_pairs[min(limit-1, len(usdt_pairs)-1)].get('quoteVolume', 0)) / 1e6
-                print(f"[+] Selected {len(combined_symbols)} Pure Crypto Futures Pairs ({len(top_volume_symbols)} Top Volume [Min: ${min_vol:.1f}M] + Top 20 Gainers/Movers)")
+                print(f"[+] Selected {len(combined_symbols)} 100% Pure Crypto Futures Pairs ({len(top_volume_symbols)} Top Volume [Min: ${min_vol:.1f}M] + Top 20 Gainers/Movers)")
                 return combined_symbols
     except Exception as e:
         print(f"[!] Warning: Dynamic Top {limit} fetch failed ({e}). Using curated list.")
