@@ -779,8 +779,10 @@ def verify_retest_confirmation(symbol, sig_type, l_entry, sl_price):
     """
     SMC 2.0 Institutional Confirmation Engine for Retest Entries:
     1. Validates 4H Macro Trend alignment (Trend is your Friend rule).
-    2. Enforces Stop Loss Safety Barrier (ensures price didn't knife through SL).
-    3. Checks 15M/5M Candle Rejection or Micro-Structure CHoCH inside the zone.
+    2. Enforces Stop Loss Hard Barrier (ensures price didn't knife through SL).
+    3. Enforces Slippage & Chasing Guard using l_entry (skips if price moved too far).
+    4. Checks 15M/5M Micro-Structure CHoCH inside the zone.
+    5. Checks 15M/5M Rejection Wicks / Decisive Reversal Candles on completed bars.
     """
     is_long = "BUY" in str(sig_type).upper() or "LONG" in str(sig_type).upper()
     
@@ -808,23 +810,40 @@ def verify_retest_confirmation(symbol, sig_type, l_entry, sl_price):
     if not is_long and curr_price >= sl_price:
         return False, f"Price breached SL (${curr_price} >= ${sl_price}) - Zone failed"
 
-    # 4. Reaction & Rejection Confirmation
+    # 4. Entry Slippage & Chasing Guard (l_entry validation)
+    if l_entry and l_entry > 0 and sl_price and sl_price > 0:
+        risk_dist = abs(l_entry - sl_price)
+        if risk_dist > 0:
+            if is_long and (curr_price - l_entry) > (0.75 * risk_dist):
+                pct_chased = ((curr_price - l_entry) / l_entry) * 100
+                return False, f"Price moved +{pct_chased:.2f}% above entry zone - Chased setup skipped"
+            elif not is_long and (l_entry - curr_price) > (0.75 * risk_dist):
+                pct_chased = ((l_entry - curr_price) / l_entry) * 100
+                return False, f"Price moved -{pct_chased:.2f}% below entry zone - Chased setup skipped"
+
+    # 5. Micro-Structure CHoCH Confirmation (15M or 5M)
     ch_15m = detect_15m_choch(klines_15m)
     ch_5m = detect_5m_choch(klines_5m) if klines_5m else {}
     
     has_choch = (ch_15m.get("has_bullish_choch") or ch_5m.get("has_bullish_choch")) if is_long else (ch_15m.get("has_bearish_choch") or ch_5m.get("has_bearish_choch"))
     if has_choch:
-        return True, "Lower-timeframe (15M/5M) CHoCH confirmed"
+        return True, "Lower-timeframe (15M/5M) CHoCH confirmed in zone"
 
-    # Check Candle Rejection Wicks / Price Reaction
-    candles_to_check = [klines_15m[-1]]
+    # 6. Price Action Rejection Wicks & Decisive Reversal Candles
+    # Prioritize completed closed candles [-2], and allow strong live candle [-1]
+    candles_to_check = []
+    if len(klines_15m) >= 3:
+        candles_to_check.append(("15M_closed", klines_15m[-2]))
+    if klines_5m and len(klines_5m) >= 3:
+        candles_to_check.append(("5M_closed", klines_5m[-2]))
+    if klines_5m and len(klines_5m) >= 4:
+        candles_to_check.append(("5M_prev_closed", klines_5m[-3]))
     if len(klines_15m) >= 2:
-        candles_to_check.append(klines_15m[-2])
+        candles_to_check.append(("15M_live", klines_15m[-1]))
     if klines_5m and len(klines_5m) >= 2:
-        candles_to_check.append(klines_5m[-1])
-        candles_to_check.append(klines_5m[-2])
+        candles_to_check.append(("5M_live", klines_5m[-1]))
 
-    for c in candles_to_check:
+    for c_tag, c in candles_to_check:
         o = float(c[1])
         h = float(c[2])
         l = float(c[3])
@@ -835,19 +854,22 @@ def verify_retest_confirmation(symbol, sig_type, l_entry, sl_price):
         
         if is_long:
             lower_wick = min(o, cl) - l
-            if (lower_wick / rng) >= 0.25 or (cl >= o and cl > sl_price):
-                return True, "Demand rejection wick / bullish candle confirmed"
+            # Significant lower rejection wick (pinbar / absorption) >= 30% of candle range
+            if (lower_wick / rng) >= 0.30 and cl > sl_price:
+                return True, f"Demand rejection wick ({lower_wick/rng*100:.0f}%) confirmed on {c_tag}"
+            # Decisive bullish engulfing / body expansion candle (body >= 50% of range and closing green)
+            if cl > o and ((cl - o) / rng) >= 0.50 and cl >= (l_entry * 0.999):
+                return True, f"Bullish momentum candle confirmed on {c_tag}"
         else:
             upper_wick = h - max(o, cl)
-            if (upper_wick / rng) >= 0.25 or (cl <= o and cl < sl_price):
-                return True, "Supply rejection wick / bearish candle confirmed"
+            # Significant upper rejection wick >= 30% of candle range
+            if (upper_wick / rng) >= 0.30 and cl < sl_price:
+                return True, f"Supply rejection wick ({upper_wick/rng*100:.0f}%) confirmed on {c_tag}"
+            # Decisive bearish engulfing / body expansion candle (body >= 50% of range and closing red)
+            if cl < o and ((o - cl) / rng) >= 0.50 and cl <= (l_entry * 1.001):
+                return True, f"Bearish momentum candle confirmed on {c_tag}"
 
-    if is_long and curr_price > sl_price:
-        return True, "Price holding above SL in Demand Zone"
-    if not is_long and curr_price < sl_price:
-        return True, "Price holding below SL in Supply Zone"
-
-    return False, "Awaiting clearer reaction"
+    return False, "Awaiting clearer lower-timeframe reaction / rejection wick"
 
 def get_futures_oi_and_funding(symbol):
     funding_pct = 0.0
@@ -1597,10 +1619,59 @@ def check_and_resolve_open_trades(news_shield=None):
                             break
 
                 if is_filled:
+                    sym = s["symbol"]
+                    raw_sl = ls.get("raw_limit_sl", s.get("sl", 0))
+
+                    # 1. SMC 2.0 Reaction & Confirmation Check
+                    is_confirmed, conf_reason = verify_retest_confirmation(sym, s["type"], l_entry, raw_sl)
+
+                    if not is_confirmed:
+                        # Check if Zone failed completely (sliced through SL or macro invalidated)
+                        if "breached SL" in conf_reason:
+                            s["status"] = "CANCELLED (Retest Failed / SL Breached)"
+                            s["resolved_at"] = datetime.now().strftime('%Y-%m-%d %H:%M')
+                            s["outcome_pnl"] = 0.0
+                            s["notified_fill"] = True
+                            print(f"[🛡️ SMC Shield] Retest for {sym} cancelled - Zone breached SL before confirming reaction.")
+                            continue
+                        elif "Macro is" in conf_reason:
+                            s["status"] = "CANCELLED (Macro Invalidation)"
+                            s["resolved_at"] = datetime.now().strftime('%Y-%m-%d %H:%M')
+                            s["outcome_pnl"] = 0.0
+                            s["notified_fill"] = True
+                            print(f"[🛡️ SMC Shield] Retest for {sym} cancelled - 4H Macro trend counter-invalidation.")
+                            continue
+                        elif "Chased setup skipped" in conf_reason:
+                            s["status"] = "EXPIRED (Chased Move)"
+                            s["resolved_at"] = datetime.now().strftime('%Y-%m-%d %H:%M')
+                            s["outcome_pnl"] = 0.0
+                            s["notified_fill"] = True
+                            print(f"[🛡️ SMC Shield] Retest for {sym} expired - price extended past entry without retest fill.")
+                            continue
+
+                        # Awaiting reaction: check if reaction window exceeded (90 mins)
+                        if not s.get("retest_touch_ts"):
+                            s["retest_touch_ts"] = now_ts
+
+                        if (now_ts - s["retest_touch_ts"]) > (90 * 60 * 1000):
+                            s["status"] = "EXPIRED (No Retest Reaction)"
+                            s["resolved_at"] = datetime.now().strftime('%Y-%m-%d %H:%M')
+                            s["outcome_pnl"] = 0.0
+                            s["notified_fill"] = True
+                            print(f"[*] Retest for {sym} timed out after 90m without reaction confirmation.")
+                            continue
+
+                        # Keep in PENDING_LIMIT to re-verify on next candle/cycle
+                        s["retest_awaiting_conf"] = True
+                        print(f"[*] Retest for {sym} in zone - {conf_reason}. Retrying next candle...")
+                        continue
+
+                    # 2. Retest is CONFIRMED! Activate trade to OPEN
                     s["status"] = "OPEN"
+                    s["retest_awaiting_conf"] = False
                     s["entry"] = l_entry
                     s["entry_str"] = fmt_price(l_entry)
-                    s["sl"] = ls.get("raw_limit_sl", s["sl"])
+                    s["sl"] = raw_sl
                     s["sl_str"] = fmt_price(s["sl"])
                     s["trailing_sl"] = s["sl"]
                     s["trailing_sl_str"] = fmt_price(s["trailing_sl"])
@@ -1617,7 +1688,6 @@ def check_and_resolve_open_trades(news_shield=None):
                         # --- SMC 2.0 CONFIRMED RETEST LIVE EXECUTION ---
                         executed_live_retest = False
                         if auto_trader and auto_trader.is_live_enabled() and not s.get("executed_live"):
-                            sym = s["symbol"]
                             cb = history_data.get("circuit_breaker", {})
                             is_cb_tripped = cb.get("is_tripped", False)
                             is_news_active = bool(news_shield and news_shield.get("is_shield_active"))
@@ -1627,52 +1697,48 @@ def check_and_resolve_open_trades(news_shield=None):
                             existing_pos = auto_trader.get_open_position(sym)
                             
                             if is_cb_tripped:
-                                print(f"[!] Retest execution skipped for {sym}: Circuit Breaker is active.")
+                                print(f"[!] Retest live execution skipped for {sym}: Circuit Breaker is active.")
                             elif is_news_active:
-                                print(f"[!] Retest execution skipped for {sym}: High-Impact News Shield active.")
+                                print(f"[!] Retest live execution skipped for {sym}: High-Impact News Shield active.")
                             elif active_positions_count >= MAX_ACTIVE_POSITIONS:
-                                print(f"[!] Retest execution skipped for {sym}: Max {MAX_ACTIVE_POSITIONS} active positions already open.")
+                                print(f"[!] Retest live execution skipped for {sym}: Max {MAX_ACTIVE_POSITIONS} active positions already open.")
                             elif existing_pos:
-                                print(f"[!] Retest execution skipped for {sym}: Position already exists on Binance.")
+                                print(f"[!] Retest live execution skipped for {sym}: Position already exists on Binance.")
                             else:
-                                is_confirmed, conf_reason = verify_retest_confirmation(sym, s["type"], l_entry, s["sl"])
-                                if is_confirmed:
-                                    act_payload = {
-                                        "symbol": sym,
-                                        "type": s["type"],
-                                        "signal": s["type"],
-                                        "raw_entry": l_entry,
-                                        "entry": s["entry_str"],
-                                        "raw_sl": s["sl"],
-                                        "stop_loss": s["sl_str"],
-                                        "raw_tp": s["tp"],
-                                        "take_profit_1_3": s["tp_str"],
-                                        "raw_tp1": s.get("tp1", 0),
-                                        "tp_1": s.get("tp1_str", "-"),
-                                        "raw_tp2": s.get("tp2", 0),
-                                        "tp_2": s.get("tp2_str", "-"),
-                                        "mtf_status": s.get("mtf_status", "BULLISH" if ("BUY" in s["type"] or "LONG" in s["type"]) else "BEARISH"),
-                                        "is_defensive": cb.get("is_defensive", False),
-                                        "risk_pct_override": 5.0 if cb.get("is_defensive") else None
-                                    }
-                                    print(f"[🎯] SMC Retest Confirmed for {sym} ({conf_reason}). Executing on Binance Futures...")
-                                    exec_res = auto_trader.execute_signal(act_payload)
-                                    if exec_res:
-                                        s["binance_order_id"] = exec_res.get("order_id")
-                                        s["binance_sl_order_id"] = exec_res.get("sl_order_id")
-                                        s["executed_live"] = True
-                                        s["executed_margin"] = exec_res.get("margin_usdt")
-                                        s["executed_qty"] = exec_res.get("qty")
-                                        s["live_entry_ts"] = int(time.time() * 1000)
-                                        if exec_res.get("entry_price"):
-                                            s["entry"] = exec_res.get("entry_price")
-                                            s["entry_str"] = fmt_price(s["entry"])
-                                        executed_live_retest = True
-                                        send_telegram_execution_alert(exec_res, act_payload, is_retest=True)
-                                    else:
-                                        print(f"[!] Auto-trader execution failed on Binance for retest {sym}.")
+                                act_payload = {
+                                    "symbol": sym,
+                                    "type": s["type"],
+                                    "signal": s["type"],
+                                    "raw_entry": l_entry,
+                                    "entry": s["entry_str"],
+                                    "raw_sl": s["sl"],
+                                    "stop_loss": s["sl_str"],
+                                    "raw_tp": s["tp"],
+                                    "take_profit_1_3": s["tp_str"],
+                                    "raw_tp1": s.get("tp1", 0),
+                                    "tp_1": s.get("tp1_str", "-"),
+                                    "raw_tp2": s.get("tp2", 0),
+                                    "tp_2": s.get("tp2_str", "-"),
+                                    "mtf_status": s.get("mtf_status", "BULLISH" if ("BUY" in s["type"] or "LONG" in s["type"]) else "BEARISH"),
+                                    "is_defensive": cb.get("is_defensive", False),
+                                    "risk_pct_override": 5.0 if cb.get("is_defensive") else None
+                                }
+                                print(f"[🎯] SMC Retest Confirmed for {sym} ({conf_reason}). Executing on Binance Futures...")
+                                exec_res = auto_trader.execute_signal(act_payload)
+                                if exec_res:
+                                    s["binance_order_id"] = exec_res.get("order_id")
+                                    s["binance_sl_order_id"] = exec_res.get("sl_order_id")
+                                    s["executed_live"] = True
+                                    s["executed_margin"] = exec_res.get("margin_usdt")
+                                    s["executed_qty"] = exec_res.get("qty")
+                                    s["live_entry_ts"] = int(time.time() * 1000)
+                                    if exec_res.get("entry_price"):
+                                        s["entry"] = exec_res.get("entry_price")
+                                        s["entry_str"] = fmt_price(s["entry"])
+                                    executed_live_retest = True
+                                    send_telegram_execution_alert(exec_res, act_payload, is_retest=True)
                                 else:
-                                    print(f"[*] Retest for {sym} awaiting confirmation or invalid: {conf_reason}")
+                                    print(f"[!] Auto-trader execution failed on Binance for retest {sym}.")
 
                         if not executed_live_retest:
                             send_telegram_resolution(s, "LIMIT_FILLED")
