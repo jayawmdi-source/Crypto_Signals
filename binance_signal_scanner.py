@@ -1332,8 +1332,11 @@ def analyze_symbol(symbol, anchored_signal=None, btc_sentiment=None, session_inf
                 if dist_to_ob_pct >= 0.15:
                     l_entry = target_limit_price
                     l_sl = sl
+                    # Enforce Dynamic ATR & Minimum 2.5% Hard Buffer on Limit Setup
+                    if (l_entry - l_sl) / l_entry < 0.025:
+                        l_sl = l_entry * 0.975
                     l_risk = l_entry - l_sl
-                    if l_risk > 0:
+                    if l_risk > 0 and (l_risk / l_entry) >= 0.015:
                         l_tp1 = l_entry + (l_risk * 1.5)
                         l_tp2 = l_entry + (l_risk * 2.0)
                         l_tp = l_entry + (l_risk * 3.0)
@@ -1364,8 +1367,11 @@ def analyze_symbol(symbol, anchored_signal=None, btc_sentiment=None, session_inf
                 if dist_to_ob_pct >= 0.15:
                     l_entry = target_limit_price
                     l_sl = sl
+                    # Enforce Dynamic ATR & Minimum 2.5% Hard Buffer on Limit Setup
+                    if (l_sl - l_entry) / l_entry < 0.025:
+                        l_sl = l_entry * 1.025
                     l_risk = l_sl - l_entry
-                    if l_risk > 0:
+                    if l_risk > 0 and (l_risk / l_entry) >= 0.015:
                         l_tp1 = l_entry - (l_risk * 1.5)
                         l_tp2 = l_entry - (l_risk * 2.0)
                         l_tp = l_entry - (l_risk * 3.0)
