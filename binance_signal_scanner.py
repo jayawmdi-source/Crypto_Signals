@@ -2418,6 +2418,7 @@ def scan_all_pairs():
     html_path = os.path.join(SCRIPT_DIR, "dashboard.html")
     index_path = os.path.join(SCRIPT_DIR, "index.html")
     parent_dir = os.path.dirname(SCRIPT_DIR)
+    json_parent_path = os.path.join(parent_dir, "latest_signals.json")
     html_parent_path = os.path.join(parent_dir, "dashboard.html")
     index_parent_path = os.path.join(parent_dir, "index.html")
 
@@ -2458,9 +2459,11 @@ def scan_all_pairs():
     try:
         generate_html_dashboard(payload, html_parent_path)
         generate_html_dashboard(payload, index_parent_path)
+        with open(json_parent_path, "w", encoding="utf-8") as f_p:
+            json.dump(payload, f_p, indent=2)
     except Exception:
         pass
-    print(f"\n[+] Updated {json_path}")
+    print(f"\n[+] Updated {json_path} & {json_parent_path}")
     print(f"[+] Updated {html_path} & {html_parent_path}")
     print(f"[+] Updated {index_path} & {index_parent_path}")
 
