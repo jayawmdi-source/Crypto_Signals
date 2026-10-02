@@ -1500,19 +1500,23 @@ def check_and_resolve_open_trades(news_shield=None):
                 if l_ts > last_loss_ts:
                     last_loss_ts = l_ts
 
-    # Live API Fail-Safe: Sync loss count directly from Binance Futures Realized PnL API
+    # Live API Fail-Safe: Sync distinct loss count directly from Binance Futures Realized PnL API
     if auto_trader and auto_trader.is_configured():
         try:
-            recent_inc = auto_trader.get_recent_income(limit=30)
-            api_today_losses = 0
+            recent_inc = auto_trader.get_recent_income(limit=50)
             start_of_day_ts = int(datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0).timestamp() * 1000)
+            sym_pnl = {}
             for inc in recent_inc:
-                inc_time = int(inc.get("time", 0))
-                pnl_val = float(inc.get("income", 0.0))
-                if inc_time >= start_of_day_ts and pnl_val < -0.01:
-                    api_today_losses += 1
-                    if inc_time > last_loss_ts:
-                        last_loss_ts = inc_time
+                # Strictly evaluate REALIZED_PNL (commissions and funding fees are not trade losses)
+                if inc.get("incomeType") == "REALIZED_PNL":
+                    inc_time = int(inc.get("time", 0))
+                    if inc_time >= start_of_day_ts:
+                        sym = inc.get("symbol")
+                        sym_pnl[sym] = sym_pnl.get(sym, 0.0) + float(inc.get("income", 0.0))
+                        if inc_time > last_loss_ts:
+                            last_loss_ts = inc_time
+            # Count distinct symbols/positions that had a net negative realized PnL today
+            api_today_losses = sum(1 for pnl in sym_pnl.values() if pnl < -0.10)
             today_losses = max(today_losses, api_today_losses)
         except Exception as e_inc:
             print(f"[!] Warning: Could not sync live Binance income for circuit breaker: {e_inc}")
