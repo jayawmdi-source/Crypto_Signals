@@ -305,17 +305,36 @@ class BinanceFuturesTrader:
             print(f"[!] Error fetching position details: {e}")
         return []
 
-    def get_recent_income(self, limit=10):
+    def get_recent_income(self, limit=100, income_type=None):
         """Fetch recent realized PnL and trade income from Binance Futures"""
         if not self.is_configured():
             return []
         try:
-            params = self._sign_request({"incomeType": "REALIZED_PNL", "limit": limit})
+            req_params = {"limit": limit}
+            if income_type:
+                req_params["incomeType"] = income_type
+            params = self._sign_request(req_params)
             resp = self.session.get(f"{BASE_URL}/fapi/v1/income", params=params, timeout=8)
             if resp.status_code == 200:
                 return resp.json()
         except Exception as e:
             print(f"[!] Error fetching Binance income: {e}")
+        return []
+
+    def get_user_trades(self, symbol=None, limit=20):
+        """Fetch exact executed trade history (realizedPnl, commission) from Binance Futures"""
+        if not self.is_configured():
+            return []
+        try:
+            req_params = {"limit": limit}
+            if symbol:
+                req_params["symbol"] = symbol
+            params = self._sign_request(req_params)
+            resp = self.session.get(f"{BASE_URL}/fapi/v1/userTrades", params=params, timeout=8)
+            if resp.status_code == 200:
+                return resp.json()
+        except Exception as e:
+            print(f"[!] Error fetching Binance user trades: {e}")
         return []
 
     def get_open_position(self, symbol):

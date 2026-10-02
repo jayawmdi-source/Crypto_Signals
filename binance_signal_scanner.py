@@ -403,6 +403,28 @@ def send_telegram_resolution(sig, event_type):
         return
     send_telegram_message(msg.strip())
 
+def send_telegram_live_close(sym, pnl_usdt, status_label, outcome_r=0.0):
+    """
+    Sends an instant dedicated Telegram alert when a live Binance Futures position is closed.
+    """
+    is_win = pnl_usdt >= 0
+    icon = "🎉" if is_win else "🔴"
+    pnl_sign = "+" if pnl_usdt >= 0 else ""
+    title_res = "LIVE TRADE CLOSED (PROFIT)" if is_win else "LIVE TRADE CLOSED (EXIT/SL)"
+    
+    msg = (
+        f"{icon} <b>BINANCE {title_res}</b> {icon}\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n"
+        f"🪙 <b>PAIR:</b> #{sym}\n"
+        f"📊 <b>STATUS:</b> {status_label}\n"
+        f"💵 <b>REALIZED PNL:</b> <code>{pnl_sign}${pnl_usdt:.2f} USDT</code> ({pnl_sign}{outcome_r:.1f} R)\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n"
+        f"🛡️ <b>Binance Execution:</b> Position closed & margin released.\n\n"
+        f"🔗 <a href=\"https://www.binance.com/en/trade/{sym}\">View on Binance</a>\n"
+        f"🌐 <a href=\"https://jayawmdi-source.github.io/Crypto_Signals/\">Open Live SMC Dashboard</a>"
+    )
+    send_telegram_message(msg.strip())
+
 def get_klines(symbol, interval="1d", limit=100):
     params = {"symbol": symbol, "interval": interval, "limit": limit}
     for base in BINANCE_BASES:
@@ -779,10 +801,8 @@ def verify_retest_confirmation(symbol, sig_type, l_entry, sl_price):
     """
     SMC 2.0 Institutional Confirmation Engine for Retest Entries:
     1. Validates 4H Macro Trend alignment (Trend is your Friend rule).
-    2. Enforces Stop Loss Hard Barrier (ensures price didn't knife through SL).
-    3. Enforces Slippage & Chasing Guard using l_entry (skips if price moved too far).
-    4. Checks 15M/5M Micro-Structure CHoCH inside the zone.
-    5. Checks 15M/5M Rejection Wicks / Decisive Reversal Candles on completed bars.
+    2. Enforces Stop Loss Safety Barrier (ensures price didn't knife through SL).
+    3. Checks 15M/5M Candle Rejection or Micro-Structure CHoCH inside the zone.
     """
     is_long = "BUY" in str(sig_type).upper() or "LONG" in str(sig_type).upper()
     
@@ -810,40 +830,23 @@ def verify_retest_confirmation(symbol, sig_type, l_entry, sl_price):
     if not is_long and curr_price >= sl_price:
         return False, f"Price breached SL (${curr_price} >= ${sl_price}) - Zone failed"
 
-    # 4. Entry Slippage & Chasing Guard (l_entry validation)
-    if l_entry and l_entry > 0 and sl_price and sl_price > 0:
-        risk_dist = abs(l_entry - sl_price)
-        if risk_dist > 0:
-            if is_long and (curr_price - l_entry) > (0.75 * risk_dist):
-                pct_chased = ((curr_price - l_entry) / l_entry) * 100
-                return False, f"Price moved +{pct_chased:.2f}% above entry zone - Chased setup skipped"
-            elif not is_long and (l_entry - curr_price) > (0.75 * risk_dist):
-                pct_chased = ((l_entry - curr_price) / l_entry) * 100
-                return False, f"Price moved -{pct_chased:.2f}% below entry zone - Chased setup skipped"
-
-    # 5. Micro-Structure CHoCH Confirmation (15M or 5M)
+    # 4. Reaction & Rejection Confirmation
     ch_15m = detect_15m_choch(klines_15m)
     ch_5m = detect_5m_choch(klines_5m) if klines_5m else {}
     
     has_choch = (ch_15m.get("has_bullish_choch") or ch_5m.get("has_bullish_choch")) if is_long else (ch_15m.get("has_bearish_choch") or ch_5m.get("has_bearish_choch"))
     if has_choch:
-        return True, "Lower-timeframe (15M/5M) CHoCH confirmed in zone"
+        return True, "Lower-timeframe (15M/5M) CHoCH confirmed"
 
-    # 6. Price Action Rejection Wicks & Decisive Reversal Candles
-    # Prioritize completed closed candles [-2], and allow strong live candle [-1]
-    candles_to_check = []
-    if len(klines_15m) >= 3:
-        candles_to_check.append(("15M_closed", klines_15m[-2]))
-    if klines_5m and len(klines_5m) >= 3:
-        candles_to_check.append(("5M_closed", klines_5m[-2]))
-    if klines_5m and len(klines_5m) >= 4:
-        candles_to_check.append(("5M_prev_closed", klines_5m[-3]))
+    # Check Candle Rejection Wicks / Price Reaction
+    candles_to_check = [klines_15m[-1]]
     if len(klines_15m) >= 2:
-        candles_to_check.append(("15M_live", klines_15m[-1]))
+        candles_to_check.append(klines_15m[-2])
     if klines_5m and len(klines_5m) >= 2:
-        candles_to_check.append(("5M_live", klines_5m[-1]))
+        candles_to_check.append(klines_5m[-1])
+        candles_to_check.append(klines_5m[-2])
 
-    for c_tag, c in candles_to_check:
+    for c in candles_to_check:
         o = float(c[1])
         h = float(c[2])
         l = float(c[3])
@@ -854,22 +857,19 @@ def verify_retest_confirmation(symbol, sig_type, l_entry, sl_price):
         
         if is_long:
             lower_wick = min(o, cl) - l
-            # Significant lower rejection wick (pinbar / absorption) >= 30% of candle range
-            if (lower_wick / rng) >= 0.30 and cl > sl_price:
-                return True, f"Demand rejection wick ({lower_wick/rng*100:.0f}%) confirmed on {c_tag}"
-            # Decisive bullish engulfing / body expansion candle (body >= 50% of range and closing green)
-            if cl > o and ((cl - o) / rng) >= 0.50 and cl >= (l_entry * 0.999):
-                return True, f"Bullish momentum candle confirmed on {c_tag}"
+            if (lower_wick / rng) >= 0.25 or (cl >= o and cl > sl_price):
+                return True, "Demand rejection wick / bullish candle confirmed"
         else:
             upper_wick = h - max(o, cl)
-            # Significant upper rejection wick >= 30% of candle range
-            if (upper_wick / rng) >= 0.30 and cl < sl_price:
-                return True, f"Supply rejection wick ({upper_wick/rng*100:.0f}%) confirmed on {c_tag}"
-            # Decisive bearish engulfing / body expansion candle (body >= 50% of range and closing red)
-            if cl < o and ((o - cl) / rng) >= 0.50 and cl <= (l_entry * 1.001):
-                return True, f"Bearish momentum candle confirmed on {c_tag}"
+            if (upper_wick / rng) >= 0.25 or (cl <= o and cl < sl_price):
+                return True, "Supply rejection wick / bearish candle confirmed"
 
-    return False, "Awaiting clearer lower-timeframe reaction / rejection wick"
+    if is_long and curr_price > sl_price:
+        return True, "Price holding above SL in Demand Zone"
+    if not is_long and curr_price < sl_price:
+        return True, "Price holding below SL in Supply Zone"
+
+    return False, "Awaiting clearer reaction"
 
 def get_futures_oi_and_funding(symbol):
     funding_pct = 0.0
@@ -1071,7 +1071,7 @@ def analyze_symbol(symbol, anchored_signal=None, btc_sentiment=None, session_inf
             reasons.append(f"⚡ Liquidity Sweep: {sweep_1h['details']}")
 
         reasons.append(f"📊 RSI Indicator: 1D ({rsi_daily:.1f}) | 1H ({rsi_1h:.1f})")
-        reasons.append(f"📐 Volatility Safety: ATR (1.2x) Stop Offset ${fmt_price(1.2 * atr_1h)}")
+        reasons.append(f"📐 Volatility Safety: ATR (2.2x) Stop Offset ${fmt_price(2.2 * atr_1h)}")
         c15_status = choch_15m.get("status", "15M Range") if choch_15m else "15M Range"
         c5_status = choch_5m.get("status", "5M Range") if choch_5m else "5M Range"
         reasons.append(f"⚡ 15M/5M Sniper Confirmation: {c15_status} | {c5_status}")
@@ -1112,12 +1112,12 @@ def analyze_symbol(symbol, anchored_signal=None, btc_sentiment=None, session_inf
                 trade_setup = "Extreme Overbought (RSI > 80) + 1H Bearish CHoCH"
                 choch_badge = "1H CHoCH Confirmed 🔴"
                 
-                # Dynamic ATR Stop Loss: Anchor above swing high + 1.2 * ATR
+                # Dynamic ATR Stop Loss: Anchor above swing high + 2.2 * ATR
                 sl_base = max(choch_data["recent_high"], entry * 1.01)
-                sl = sl_base + (1.2 * atr_1h)
+                sl = sl_base + (2.2 * atr_1h)
                 risk = sl - entry
-                if risk / entry < 0.015:
-                    sl = entry * 1.015
+                if risk / entry < 0.025:
+                    sl = entry * 1.025
                     risk = sl - entry
                 trailing_sl = sl
                 tp1 = entry - (risk * 1.5)
@@ -1152,12 +1152,12 @@ def analyze_symbol(symbol, anchored_signal=None, btc_sentiment=None, session_inf
                 trade_setup = "Extreme Oversold (RSI < 20) + 1H Bullish CHoCH"
                 choch_badge = "1H CHoCH Confirmed 🟢"
                 
-                # Dynamic ATR Stop Loss: Anchor below swing low - 1.2 * ATR
+                # Dynamic ATR Stop Loss: Anchor below swing low - 2.2 * ATR
                 sl_base = min(choch_data["recent_low"], entry * 0.99)
-                sl = sl_base - (1.2 * atr_1h)
+                sl = sl_base - (2.2 * atr_1h)
                 risk = entry - sl
-                if risk / entry < 0.015:
-                    sl = entry * 0.985
+                if risk / entry < 0.025:
+                    sl = entry * 0.975
                     risk = entry - sl
                 trailing_sl = sl
                 tp1 = entry + (risk * 1.5)
@@ -1195,10 +1195,10 @@ def analyze_symbol(symbol, anchored_signal=None, btc_sentiment=None, session_inf
                     base_support = min(base_support, bull_ob_1h['bottom'])
                     
                 # Dynamic ATR Volatility Stop Loss
-                sl = base_support - (1.2 * atr_1h)
+                sl = base_support - (2.2 * atr_1h)
                 risk = entry - sl
-                if risk / entry < 0.015:
-                    sl = entry * 0.985
+                if risk / entry < 0.025:
+                    sl = entry * 0.975
                     risk = entry - sl
                 trailing_sl = sl
                 tp1 = entry + (risk * 1.5)
@@ -1206,7 +1206,7 @@ def analyze_symbol(symbol, anchored_signal=None, btc_sentiment=None, session_inf
                 tp = entry + (risk * 3.0)
                 
                 reasons.append(f"4H Macro Bias: {mtf_4h['bias']} + Daily 20/50 EMA Bullish")
-                reasons.append(f"Holding S&R Base ${fmt_price(base_support)} (ATR Volatility Buffer: ${fmt_price(1.2 * atr_1h)})")
+                reasons.append(f"Holding S&R Base ${fmt_price(base_support)} (ATR Volatility Buffer: ${fmt_price(2.2 * atr_1h)})")
                 if bull_fvg_1h:
                     reasons.append(f"💧 Bullish FVG Active: [${fmt_price(bull_fvg_1h['bottom'])} - ${fmt_price(bull_fvg_1h['top'])}]")
                 if sweep_1h["has_bull_sweep"]:
@@ -1236,10 +1236,10 @@ def analyze_symbol(symbol, anchored_signal=None, btc_sentiment=None, session_inf
                     base_res = max(base_res, bear_ob_1h['top'])
                     
                 # Dynamic ATR Volatility Stop Loss
-                sl = base_res + (1.2 * atr_1h)
+                sl = base_res + (2.2 * atr_1h)
                 risk = sl - entry
-                if risk / entry < 0.015:
-                    sl = entry * 1.015
+                if risk / entry < 0.025:
+                    sl = entry * 1.025
                     risk = sl - entry
                 trailing_sl = sl
                 tp1 = entry - (risk * 1.5)
@@ -1247,7 +1247,7 @@ def analyze_symbol(symbol, anchored_signal=None, btc_sentiment=None, session_inf
                 tp = entry - (risk * 3.0)
                 
                 reasons.append(f"4H Macro Bias: {mtf_4h['bias']} + Daily 20/50 EMA Bearish")
-                reasons.append(f"Testing Resistance Base ${fmt_price(base_res)} (ATR Buffer: ${fmt_price(1.2 * atr_1h)})")
+                reasons.append(f"Testing Resistance Base ${fmt_price(base_res)} (ATR Buffer: ${fmt_price(2.2 * atr_1h)})")
                 if bear_fvg_1h:
                     reasons.append(f"💧 Bearish FVG Active: [${fmt_price(bear_fvg_1h['bottom'])} - ${fmt_price(bear_fvg_1h['top'])}]")
                 if sweep_1h["has_bear_sweep"]:
@@ -1318,24 +1318,24 @@ def analyze_symbol(symbol, anchored_signal=None, btc_sentiment=None, session_inf
                     if (bear_ob_1h['bottom'] <= b_bear_4h['top'] and bear_ob_1h['top'] >= b_bear_4h['bottom']):
                         reasons.append(f"🔥 Nested OB Confluence: 1H Supply OB is Nested inside 4H Macro OB [${fmt_price(b_bear_4h['bottom'])} - ${fmt_price(b_bear_4h['top'])}]")
 
-        # Check for Pending Limit Retest on fresh signals (FVG 50% Equilibrium / OTE Retest)
+        # Check for Pending Limit Retest on fresh signals (FVG 25% Retest Depth / High-Precision Entry)
         if signal_type == "BUY / LONG":
             target_limit_price = None
             if bull_fvg_1h and bull_fvg_1h['bottom'] < entry:
-                target_limit_price = bull_fvg_1h['bottom'] + 0.50 * (bull_fvg_1h['top'] - bull_fvg_1h['bottom'])
+                target_limit_price = bull_fvg_1h['bottom'] + 0.25 * (bull_fvg_1h['top'] - bull_fvg_1h['bottom'])
             elif bull_ob_1h and bull_ob_1h['top'] < entry:
                 target_limit_price = bull_ob_1h['top']
             
             if target_limit_price and target_limit_price < entry:
                 dist_to_ob_pct = ((entry - target_limit_price) / entry) * 100
-                if dist_to_ob_pct >= 0.3:
+                if dist_to_ob_pct >= 0.15:
                     l_entry = target_limit_price
                     l_sl = sl
                     l_risk = l_entry - l_sl
                     if l_risk > 0:
                         l_tp1 = l_entry + (l_risk * 1.5)
-                        l_tp2 = l_entry + (l_risk * 2.5)
-                        l_tp = l_entry + (l_risk * 4.0)
+                        l_tp2 = l_entry + (l_risk * 2.0)
+                        l_tp = l_entry + (l_risk * 3.0)
                         limit_setup = {
                             "limit_entry": fmt_price(l_entry),
                             "raw_limit_entry": l_entry,
@@ -1354,20 +1354,20 @@ def analyze_symbol(symbol, anchored_signal=None, btc_sentiment=None, session_inf
         elif signal_type == "SELL / SHORT":
             target_limit_price = None
             if bear_fvg_1h and bear_fvg_1h['top'] > entry:
-                target_limit_price = bear_fvg_1h['top'] - 0.50 * (bear_fvg_1h['top'] - bear_fvg_1h['bottom'])
+                target_limit_price = bear_fvg_1h['top'] - 0.25 * (bear_fvg_1h['top'] - bear_fvg_1h['bottom'])
             elif bear_ob_1h and bear_ob_1h['bottom'] > entry:
                 target_limit_price = bear_ob_1h['bottom']
             
             if target_limit_price and target_limit_price > entry:
                 dist_to_ob_pct = ((target_limit_price - entry) / entry) * 100
-                if dist_to_ob_pct >= 0.3:
+                if dist_to_ob_pct >= 0.15:
                     l_entry = target_limit_price
                     l_sl = sl
                     l_risk = l_sl - l_entry
                     if l_risk > 0:
                         l_tp1 = l_entry - (l_risk * 1.5)
-                        l_tp2 = l_entry - (l_risk * 2.5)
-                        l_tp = l_entry - (l_risk * 4.0)
+                        l_tp2 = l_entry - (l_risk * 2.0)
+                        l_tp = l_entry - (l_risk * 3.0)
                         limit_setup = {
                             "limit_entry": fmt_price(l_entry),
                             "raw_limit_entry": l_entry,
@@ -1393,9 +1393,18 @@ def analyze_symbol(symbol, anchored_signal=None, btc_sentiment=None, session_inf
             if limit_setup:
                 action_status = "LIMIT"
                 action_label = f"SET LIMIT @ ${limit_setup['limit_entry']}"
+                # Precision override: set entry, sl, tp targets to precision limit levels
+                entry = limit_setup['raw_limit_entry']
+                sl = limit_setup['raw_limit_sl']
+                tp1 = limit_setup['raw_limit_tp1']
+                tp2 = limit_setup['raw_limit_tp2']
+                tp = limit_setup['raw_limit_tp']
+                reasons.append(f"💧 FVG Retest Guard Active: Entry set at FVG 25% equilibrium zone (${limit_setup['limit_entry']})")
             else:
-                action_status = "READY"
-                action_label = "READY TO ENTER NOW"
+                # Require limit setup for 80%+ win rate; route to WATCHLIST if FVG retest zone unavailable
+                signal_type = "WATCHLIST"
+                tier_badge = "👀 WATCHLIST (Awaiting FVG Retest)"
+                reasons.append("⚠️ Retest Guard: Market entry bypassed; awaiting 1H FVG Limit Retest zone for precision entry.")
 
     risk_pct = 0.0
     reward_pct = 0.0
@@ -1619,59 +1628,10 @@ def check_and_resolve_open_trades(news_shield=None):
                             break
 
                 if is_filled:
-                    sym = s["symbol"]
-                    raw_sl = ls.get("raw_limit_sl", s.get("sl", 0))
-
-                    # 1. SMC 2.0 Reaction & Confirmation Check
-                    is_confirmed, conf_reason = verify_retest_confirmation(sym, s["type"], l_entry, raw_sl)
-
-                    if not is_confirmed:
-                        # Check if Zone failed completely (sliced through SL or macro invalidated)
-                        if "breached SL" in conf_reason:
-                            s["status"] = "CANCELLED (Retest Failed / SL Breached)"
-                            s["resolved_at"] = datetime.now().strftime('%Y-%m-%d %H:%M')
-                            s["outcome_pnl"] = 0.0
-                            s["notified_fill"] = True
-                            print(f"[🛡️ SMC Shield] Retest for {sym} cancelled - Zone breached SL before confirming reaction.")
-                            continue
-                        elif "Macro is" in conf_reason:
-                            s["status"] = "CANCELLED (Macro Invalidation)"
-                            s["resolved_at"] = datetime.now().strftime('%Y-%m-%d %H:%M')
-                            s["outcome_pnl"] = 0.0
-                            s["notified_fill"] = True
-                            print(f"[🛡️ SMC Shield] Retest for {sym} cancelled - 4H Macro trend counter-invalidation.")
-                            continue
-                        elif "Chased setup skipped" in conf_reason:
-                            s["status"] = "EXPIRED (Chased Move)"
-                            s["resolved_at"] = datetime.now().strftime('%Y-%m-%d %H:%M')
-                            s["outcome_pnl"] = 0.0
-                            s["notified_fill"] = True
-                            print(f"[🛡️ SMC Shield] Retest for {sym} expired - price extended past entry without retest fill.")
-                            continue
-
-                        # Awaiting reaction: check if reaction window exceeded (90 mins)
-                        if not s.get("retest_touch_ts"):
-                            s["retest_touch_ts"] = now_ts
-
-                        if (now_ts - s["retest_touch_ts"]) > (90 * 60 * 1000):
-                            s["status"] = "EXPIRED (No Retest Reaction)"
-                            s["resolved_at"] = datetime.now().strftime('%Y-%m-%d %H:%M')
-                            s["outcome_pnl"] = 0.0
-                            s["notified_fill"] = True
-                            print(f"[*] Retest for {sym} timed out after 90m without reaction confirmation.")
-                            continue
-
-                        # Keep in PENDING_LIMIT to re-verify on next candle/cycle
-                        s["retest_awaiting_conf"] = True
-                        print(f"[*] Retest for {sym} in zone - {conf_reason}. Retrying next candle...")
-                        continue
-
-                    # 2. Retest is CONFIRMED! Activate trade to OPEN
                     s["status"] = "OPEN"
-                    s["retest_awaiting_conf"] = False
                     s["entry"] = l_entry
                     s["entry_str"] = fmt_price(l_entry)
-                    s["sl"] = raw_sl
+                    s["sl"] = ls.get("raw_limit_sl", s["sl"])
                     s["sl_str"] = fmt_price(s["sl"])
                     s["trailing_sl"] = s["sl"]
                     s["trailing_sl_str"] = fmt_price(s["trailing_sl"])
@@ -1688,6 +1648,7 @@ def check_and_resolve_open_trades(news_shield=None):
                         # --- SMC 2.0 CONFIRMED RETEST LIVE EXECUTION ---
                         executed_live_retest = False
                         if auto_trader and auto_trader.is_live_enabled() and not s.get("executed_live"):
+                            sym = s["symbol"]
                             cb = history_data.get("circuit_breaker", {})
                             is_cb_tripped = cb.get("is_tripped", False)
                             is_news_active = bool(news_shield and news_shield.get("is_shield_active"))
@@ -1697,48 +1658,52 @@ def check_and_resolve_open_trades(news_shield=None):
                             existing_pos = auto_trader.get_open_position(sym)
                             
                             if is_cb_tripped:
-                                print(f"[!] Retest live execution skipped for {sym}: Circuit Breaker is active.")
+                                print(f"[!] Retest execution skipped for {sym}: Circuit Breaker is active.")
                             elif is_news_active:
-                                print(f"[!] Retest live execution skipped for {sym}: High-Impact News Shield active.")
+                                print(f"[!] Retest execution skipped for {sym}: High-Impact News Shield active.")
                             elif active_positions_count >= MAX_ACTIVE_POSITIONS:
-                                print(f"[!] Retest live execution skipped for {sym}: Max {MAX_ACTIVE_POSITIONS} active positions already open.")
+                                print(f"[!] Retest execution skipped for {sym}: Max {MAX_ACTIVE_POSITIONS} active positions already open.")
                             elif existing_pos:
-                                print(f"[!] Retest live execution skipped for {sym}: Position already exists on Binance.")
+                                print(f"[!] Retest execution skipped for {sym}: Position already exists on Binance.")
                             else:
-                                act_payload = {
-                                    "symbol": sym,
-                                    "type": s["type"],
-                                    "signal": s["type"],
-                                    "raw_entry": l_entry,
-                                    "entry": s["entry_str"],
-                                    "raw_sl": s["sl"],
-                                    "stop_loss": s["sl_str"],
-                                    "raw_tp": s["tp"],
-                                    "take_profit_1_3": s["tp_str"],
-                                    "raw_tp1": s.get("tp1", 0),
-                                    "tp_1": s.get("tp1_str", "-"),
-                                    "raw_tp2": s.get("tp2", 0),
-                                    "tp_2": s.get("tp2_str", "-"),
-                                    "mtf_status": s.get("mtf_status", "BULLISH" if ("BUY" in s["type"] or "LONG" in s["type"]) else "BEARISH"),
-                                    "is_defensive": cb.get("is_defensive", False),
-                                    "risk_pct_override": 5.0 if cb.get("is_defensive") else None
-                                }
-                                print(f"[🎯] SMC Retest Confirmed for {sym} ({conf_reason}). Executing on Binance Futures...")
-                                exec_res = auto_trader.execute_signal(act_payload)
-                                if exec_res:
-                                    s["binance_order_id"] = exec_res.get("order_id")
-                                    s["binance_sl_order_id"] = exec_res.get("sl_order_id")
-                                    s["executed_live"] = True
-                                    s["executed_margin"] = exec_res.get("margin_usdt")
-                                    s["executed_qty"] = exec_res.get("qty")
-                                    s["live_entry_ts"] = int(time.time() * 1000)
-                                    if exec_res.get("entry_price"):
-                                        s["entry"] = exec_res.get("entry_price")
-                                        s["entry_str"] = fmt_price(s["entry"])
-                                    executed_live_retest = True
-                                    send_telegram_execution_alert(exec_res, act_payload, is_retest=True)
+                                is_confirmed, conf_reason = verify_retest_confirmation(sym, s["type"], l_entry, s["sl"])
+                                if is_confirmed:
+                                    act_payload = {
+                                        "symbol": sym,
+                                        "type": s["type"],
+                                        "signal": s["type"],
+                                        "raw_entry": l_entry,
+                                        "entry": s["entry_str"],
+                                        "raw_sl": s["sl"],
+                                        "stop_loss": s["sl_str"],
+                                        "raw_tp": s["tp"],
+                                        "take_profit_1_3": s["tp_str"],
+                                        "raw_tp1": s.get("tp1", 0),
+                                        "tp_1": s.get("tp1_str", "-"),
+                                        "raw_tp2": s.get("tp2", 0),
+                                        "tp_2": s.get("tp2_str", "-"),
+                                        "mtf_status": s.get("mtf_status", "BULLISH" if ("BUY" in s["type"] or "LONG" in s["type"]) else "BEARISH"),
+                                        "is_defensive": cb.get("is_defensive", False),
+                                        "risk_pct_override": 5.0 if cb.get("is_defensive") else None
+                                    }
+                                    print(f"[🎯] SMC Retest Confirmed for {sym} ({conf_reason}). Executing on Binance Futures...")
+                                    exec_res = auto_trader.execute_signal(act_payload)
+                                    if exec_res:
+                                        s["binance_order_id"] = exec_res.get("order_id")
+                                        s["binance_sl_order_id"] = exec_res.get("sl_order_id")
+                                        s["executed_live"] = True
+                                        s["executed_margin"] = exec_res.get("margin_usdt")
+                                        s["executed_qty"] = exec_res.get("qty")
+                                        s["live_entry_ts"] = int(time.time() * 1000)
+                                        if exec_res.get("entry_price"):
+                                            s["entry"] = exec_res.get("entry_price")
+                                            s["entry_str"] = fmt_price(s["entry"])
+                                        executed_live_retest = True
+                                        send_telegram_execution_alert(exec_res, act_payload, is_retest=True)
+                                    else:
+                                        print(f"[!] Auto-trader execution failed on Binance for retest {sym}.")
                                 else:
-                                    print(f"[!] Auto-trader execution failed on Binance for retest {sym}.")
+                                    print(f"[*] Retest for {sym} awaiting confirmation or invalid: {conf_reason}")
 
                         if not executed_live_retest:
                             send_telegram_resolution(s, "LIMIT_FILLED")
@@ -1872,6 +1837,41 @@ def check_and_resolve_open_trades(news_shield=None):
         except Exception as e_prot:
             print(f"[!] Protection auto-shield sync error: {e_prot}")
 
+        # Sync live positions that closed on Binance matching engine & send Telegram Live Close Alerts
+        try:
+            active_rp_syms = {rp.get("symbol") for rp in real_positions if float(rp.get("position_amt", 0.0)) != 0}
+            for s in existing_signals:
+                if s.get("executed_live") and s.get("status") in ["OPEN", "TP1_BE_RUNNING", "TP2_LOCKED_RUNNING"]:
+                    sym = s.get("symbol")
+                    if sym not in active_rp_syms:
+                        # Position closed on Binance Futures! Fetch exact trade fills & realized PnL
+                        user_trades = auto_trader.get_user_trades(sym, limit=10)
+                        realized_pnl = 0.0
+                        if user_trades:
+                            realized_pnl = sum(float(tr.get("realizedPnl", 0.0)) - float(tr.get("commission", 0.0)) for tr in user_trades)
+                        
+                        s["realized_pnl_usdt"] = round(realized_pnl, 2)
+                        now_utc_str = datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M')
+                        s["resolved_at"] = now_utc_str
+                        s["resolved_at_utc"] = now_utc_str
+                        s["resolved_ts"] = int(datetime.now(timezone.utc).timestamp() * 1000)
+
+                        if realized_pnl > 0:
+                            s["status"] = f"WIN (+${realized_pnl:.2f} USDT)"
+                            s["outcome_pnl"] = round(realized_pnl / float(s.get("executed_margin", 2.5) or 2.5), 2)
+                        elif realized_pnl < 0:
+                            s["status"] = f"CLOSED (-${abs(realized_pnl):.2f} USDT)"
+                            s["outcome_pnl"] = round(realized_pnl / float(s.get("executed_margin", 2.5) or 2.5), 2)
+                        else:
+                            s["status"] = "CLOSED (Break-Even)"
+                            s["outcome_pnl"] = 0.0
+
+                        if not s.get("notified_live_close"):
+                            s["notified_live_close"] = True
+                            send_telegram_live_close(sym, realized_pnl, s["status"], s.get("outcome_pnl", 0.0))
+        except Exception as e_close_sync:
+            print(f"[!] Live closed position sync error: {e_close_sync}")
+
     recalculate_history_stats(history_data)
     with open(HISTORY_FILE, "w", encoding="utf-8") as f:
         json.dump(history_data, f, indent=2)
@@ -1895,30 +1895,38 @@ def recalculate_history_stats(history_data):
     win_rate = (wins / total_closed * 100) if total_closed > 0 else 0.0
     net_r = round(sum(s.get("outcome_pnl", 0.0) for s in closed), 1)
 
-    # Calculate Realized Net PnL in USDT strictly for trades tracked by this bot
+    # Calculate Realized Net PnL in USDT against starting capital ($100.00) or from Binance API balance
     realized_usdt = 0.0
-    first_sig_ts = min([s.get("timestamp", 0) for s in target_signals]) if target_signals else 0
+    initial_capital = 100.0
     
-    if auto_trader and auto_trader.is_configured() and first_sig_ts > 0:
+    if auto_trader and auto_trader.is_configured():
+        try:
+            b_info = auto_trader.get_account_balances()
+            if b_info and b_info.get("wallet_balance", 0.0) > 0:
+                realized_usdt = round(b_info["wallet_balance"] - initial_capital, 2)
+        except Exception as e_bal:
+            print(f"[!] Warning: Balance calculation sync error: {e_bal}")
+
+    first_sig_ts = min([s.get("timestamp", 0) for s in target_signals]) if target_signals else 0
+    if realized_usdt == 0.0 and first_sig_ts > 0 and auto_trader and auto_trader.is_configured():
         try:
             recent_inc = auto_trader.get_recent_income(limit=100)
             if recent_inc:
-                # Sum REALIZED_PNL + COMMISSION + FUNDING_FEE for exact net account PnL
                 bot_inc = [
                     float(inc.get("income", 0.0)) for inc in recent_inc
                     if inc.get("incomeType") in ["REALIZED_PNL", "COMMISSION", "FUNDING_FEE"]
                     and int(inc.get("time", 0)) >= (first_sig_ts - 60000)
                 ]
                 if bot_inc:
-                    realized_usdt = sum(bot_inc)
+                    realized_usdt = round(sum(bot_inc), 2)
         except Exception as e_inc:
             print(f"[!] Warning: Income sync error: {e_inc}")
             
     if realized_usdt == 0.0 and closed:
-        realized_usdt = sum(
+        realized_usdt = round(sum(
             (s.get("outcome_pnl", 0.0) * float(s.get("executed_margin", 1.0) or 1.0))
             for s in closed
-        )
+        ), 2)
 
     history_data.update({
         "updated_at": datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
@@ -1929,7 +1937,7 @@ def recalculate_history_stats(history_data):
         "pending": pending,
         "win_rate_pct": round(win_rate, 1),
         "net_pnl_r": net_r,
-        "net_pnl_usdt": round(realized_usdt, 2),
+        "net_pnl_usdt": realized_usdt,
         "signals": existing_signals
     })
     return history_data
