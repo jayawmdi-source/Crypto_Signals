@@ -893,8 +893,8 @@ def get_futures_oi_and_funding(symbol):
     return {
         "funding_pct": round(funding_pct, 4),
         "open_interest": oi_val,
-        "is_funding_excessive_long": funding_pct > 0.05,
-        "is_funding_excessive_short": funding_pct < -0.05
+        "is_funding_excessive_long": funding_pct > 0.035,
+        "is_funding_excessive_short": funding_pct < -0.035
     }
 
 def analyze_symbol(symbol, anchored_signal=None, btc_sentiment=None, session_info=None):
@@ -1271,11 +1271,12 @@ def analyze_symbol(symbol, anchored_signal=None, btc_sentiment=None, session_inf
                 elif choch_data["has_bullish_choch"]:
                     choch_badge = "1H CHoCH Bullish"
 
-        # Apply the 4 High-Probability Filters for Maximum Win-Rate:
+        # Apply the 5 High-Probability Sniper Filters for Maximum Win-Rate:
         # 1. London & NY Prime Session Guard
         # 2. Strict BTC Macro Correlation Guard
         # 3. Volume Expansion Filter (VSA >= 1.30x SMA20)
         # 4. Nested 4H + 1H Order Block Confluence
+        # 5. Derivatives Crowded Trade / Funding Rate Shield (>+0.035% or <-0.035%)
         if signal_type in ["BUY / LONG", "SELL / SHORT"] and not anchored_signal:
             # 1. Session Guard: Allow live entry execution ONLY during Prime Sessions
             if session_info and not session_info.get("is_prime", True):
@@ -1318,6 +1319,20 @@ def analyze_symbol(symbol, anchored_signal=None, btc_sentiment=None, session_inf
                 elif signal_type == "SELL / SHORT" and bear_ob_1h and b_bear_4h:
                     if (bear_ob_1h['bottom'] <= b_bear_4h['top'] and bear_ob_1h['top'] >= b_bear_4h['bottom']):
                         reasons.append(f"🔥 Nested OB Confluence: 1H Supply OB is Nested inside 4H Macro OB [${fmt_price(b_bear_4h['bottom'])} - ${fmt_price(b_bear_4h['top'])}]")
+
+            # 5. Derivatives Crowded Trade / Funding Rate Shield
+            if derivatives_info and signal_type in ["BUY / LONG", "SELL / SHORT"]:
+                f_rate = derivatives_info.get("funding_pct", 0.0)
+                if signal_type == "BUY / LONG" and f_rate > 0.035:
+                    signal_type = "WATCHLIST"
+                    tier_badge = "🛡️ CROWDED LONGS WATCHLIST"
+                    trade_setup = f"Long Blocked: Crowded Long Trap (Funding {f_rate:+.4f}%)"
+                    reasons.append(f"⚠️ Crowded Longs Shield: Funding rate is excessively positive ({f_rate:+.4f}% > +0.035%). High risk of long squeeze / liquidation cascade.")
+                elif signal_type == "SELL / SHORT" and f_rate < -0.035:
+                    signal_type = "WATCHLIST"
+                    tier_badge = "🛡️ CROWDED SHORTS WATCHLIST"
+                    trade_setup = f"Short Blocked: Crowded Short Trap (Funding {f_rate:+.4f}%)"
+                    reasons.append(f"⚠️ Crowded Shorts Shield: Funding rate is heavily negative ({f_rate:+.4f}% < -0.035%). High risk of short squeeze cascade.")
 
         # Check for Pending Limit Retest on fresh signals (FVG 25% Retest Depth / High-Precision Entry)
         if signal_type == "BUY / LONG":
@@ -1463,6 +1478,8 @@ def analyze_symbol(symbol, anchored_signal=None, btc_sentiment=None, session_inf
         "limit_setup": limit_setup,
         "action_status": action_status,
         "action_label": action_label,
+        "funding_rate": round(derivatives_info.get("funding_pct", 0.0), 4) if derivatives_info else 0.0,
+        "open_interest": derivatives_info.get("open_interest", 0.0) if derivatives_info else 0.0,
         "reasons": reasons
     }
 
@@ -1741,7 +1758,8 @@ def check_and_resolve_open_trades(news_shield=None):
                                         "tp_2": s.get("tp2_str", "-"),
                                         "mtf_status": s.get("mtf_status", "BULLISH" if ("BUY" in s["type"] or "LONG" in s["type"]) else "BEARISH"),
                                         "is_defensive": cb.get("is_defensive", False),
-                                        "risk_pct_override": 5.0 if cb.get("is_defensive") else None
+                                        "risk_pct_override": 0.75 if cb.get("is_defensive") else 1.5,
+                                        "funding_rate": s.get("funding_rate", 0.0)
                                     }
                                     print(f"[🎯] SMC Retest Confirmed for {sym} ({conf_reason}). Executing on Binance Futures...")
                                     exec_res = auto_trader.execute_signal(act_payload)
@@ -2082,6 +2100,8 @@ def record_new_signals_to_history(actionable_signals, history_data, open_symbols
                 "tp": act["raw_tp"],
                 "tp_str": act["take_profit_1_3"],
                 "limit_setup": act.get("limit_setup"),
+                "funding_rate": act.get("funding_rate", 0.0),
+                "open_interest": act.get("open_interest", 0.0),
                 "status": initial_status,
                 "outcome_pnl": 0.0
             }
@@ -2095,6 +2115,9 @@ def record_new_signals_to_history(actionable_signals, history_data, open_symbols
                     continue
 
                 if auto_trader and auto_trader.is_live_enabled():
+                    cb = history_data.get("circuit_breaker", {})
+                    act["is_defensive"] = cb.get("is_defensive", False)
+                    act["risk_pct_override"] = 0.75 if cb.get("is_defensive") else 1.5
                     exec_res = auto_trader.execute_signal(act)
                     if not exec_res:
                         print(f"[!] Auto-trade failed on Binance for {sym}. Skipping trade recording.")
@@ -2174,22 +2197,32 @@ def get_top_pairs(limit=None):
                     continue
                 if sym.endswith('BUSDT') and sym not in real_b_cryptos:
                     continue
+
+                # Sniper Liquidity Filter: strictly require >= $25M (25,000,000 USDT) 24h quote volume
+                # Eliminates illiquid low-cap pairs prone to whale manipulation, spread slippage, and stop-hunts
+                try:
+                    q_vol = float(t.get('quoteVolume', 0))
+                except Exception:
+                    q_vol = 0.0
+                if q_vol < 25_000_000:
+                    continue
+
                 usdt_pairs.append(t)
 
-            # 1. Top 150 Pure Crypto Volume Leaders
+            # 1. Top Pure Crypto Volume Leaders (strictly >= $25M)
             usdt_pairs.sort(key=lambda x: float(x.get('quoteVolume', 0)), reverse=True)
             top_volume_symbols = [t['symbol'] for t in usdt_pairs[:limit]]
 
-            # 2. Top 20 Pure Crypto Price & Volume Gainers/Movers of the day
+            # 2. Top 20 Pure Crypto Price & Volume Gainers/Movers of the day (strictly >= $25M)
             usdt_pairs_by_gainer = sorted(usdt_pairs, key=lambda x: abs(float(x.get('priceChangePercent', 0))), reverse=True)
             top_gainer_symbols = [t['symbol'] for t in usdt_pairs_by_gainer[:20]]
 
             # 3. Merge & Deduplicate
             combined_symbols = list(dict.fromkeys(top_volume_symbols + top_gainer_symbols))
 
-            if len(combined_symbols) >= 30:
+            if len(combined_symbols) >= 20:
                 min_vol = float(usdt_pairs[min(limit-1, len(usdt_pairs)-1)].get('quoteVolume', 0)) / 1e6
-                print(f"[+] Selected {len(combined_symbols)} 100% Pure Crypto Futures Pairs ({len(top_volume_symbols)} Top Volume [Min: ${min_vol:.1f}M] + Top 20 Gainers/Movers)")
+                print(f"[+] Selected {len(combined_symbols)} 100% Pure Crypto Futures Pairs with >= $25M Volume ({len(top_volume_symbols)} Leaders [Min: ${min_vol:.1f}M] + Top 20 Gainers)")
                 return combined_symbols
     except Exception as e:
         print(f"[!] Warning: Dynamic Top {limit} fetch failed ({e}). Using curated list.")

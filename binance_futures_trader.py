@@ -522,6 +522,15 @@ class BinanceFuturesTrader:
             print(f"[!] Auto-Trader Safety: Blocked SHORT execution on {symbol} - 4H Macro is BULLISH ('Trend is your Friend' rule).")
             return None
 
+        # Derivatives Crowded Funding Rate Guard on real money execution:
+        funding_rate = float(sig.get("funding_rate") or sig.get("derivatives_funding") or 0.0)
+        if is_long and funding_rate > 0.035:
+            print(f"[!] Auto-Trader Safety: Blocked LONG execution on {symbol} - Funding rate is excessively positive ({funding_rate:+.4f}%).")
+            return None
+        if not is_long and funding_rate < -0.035:
+            print(f"[!] Auto-Trader Safety: Blocked SHORT execution on {symbol} - Funding rate is heavily negative ({funding_rate:+.4f}%).")
+            return None
+
         entry_price = float(sig.get("raw_entry") or sig.get("entry", 0))
         sl_price = float(sig.get("raw_sl") or sig.get("sl", 0))
         tp_price = float(sig.get("raw_tp") or sig.get("tp", 0))
@@ -559,9 +568,9 @@ class BinanceFuturesTrader:
         avail_usdt = balances.get("available_balance", 0.0)
         wallet_usdt = balances.get("wallet_balance", avail_usdt)
         
-        # Dynamic Risk Allocation: Risk 1.0% of Available USDT Equity (or 0.5% in Defensive Mode)
+        # Dynamic Risk Allocation: Risk 1.5% of Available USDT Equity (or 0.75% in Defensive Mode)
         # Formula: Qty = (Equity * Risk%) / |Entry - StopLoss|
-        size_pct = float(sig.get("risk_pct_override") or (0.5 if sig.get("is_defensive") else 1.0))
+        size_pct = float(sig.get("risk_pct_override") or (0.75 if sig.get("is_defensive") else 1.5))
         risk_usdt = avail_usdt * (size_pct / 100.0)
         stop_dist = abs(entry_price - sl_price)
         
