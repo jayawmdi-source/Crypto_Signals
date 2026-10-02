@@ -1,12 +1,12 @@
 {
-  "updated_at": "2026-10-02 01:15:14",
-  "total_signals": 18,
-  "total_closed": 18,
+  "updated_at": "2026-10-02 14:34:28",
+  "total_signals": 19,
+  "total_closed": 19,
   "wins": 4,
-  "losses": 14,
+  "losses": 15,
   "pending": 0,
-  "win_rate_pct": 22.2,
-  "net_pnl_r": -6.5,
+  "win_rate_pct": 21.1,
+  "net_pnl_r": -7.5,
   "circuit_breaker": {
     "status": "NORMAL",
     "is_tripped": false,
@@ -2464,9 +2464,21 @@
         "reward_pct": "0.16%",
         "dist_pct": "9.0%"
       },
-      "status": "PENDING_LIMIT",
-      "outcome_pnl": 0.0
+      "status": "LOSS (SL Hit)",
+      "outcome_pnl": -1.0,
+      "realized_pnl_usdt": -1.18,
+      "binance_order_id": 2051867964,
+      "binance_sl_order_id": 4000001939913169,
+      "executed_live": true,
+      "executed_margin": 23.78,
+      "executed_qty": 1655.8,
+      "filled_at": "2026-10-02 07:12",
+      "notified_fill": true,
+      "resolved_at": "2026-10-02 07:14",
+      "resolved_at_utc": "2026-10-02 07:14",
+      "resolved_ts": 1790925292076,
+      "notified_loss": true
     }
   ],
-  "net_pnl_usdt": -4.88
+  "net_pnl_usdt": -32.75
 }

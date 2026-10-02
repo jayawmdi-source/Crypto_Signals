@@ -1584,9 +1584,54 @@ def check_and_resolve_open_trades(news_shield=None):
         "notified_hard_stop": cb.get("notified_hard_stop", False)
     }
 
+    real_positions = []
+    active_rp_syms = set()
+    if auto_trader and auto_trader.is_live_enabled():
+        try:
+            real_positions = auto_trader.get_open_positions_detail()
+            active_rp_syms = {rp.get("symbol") for rp in real_positions if float(rp.get("position_amt", 0.0)) != 0}
+        except Exception as e_pos:
+            print(f"[!] Warning fetching open positions for resolution: {e_pos}")
+
     for s in existing_signals:
         curr_status = s.get("status", "OPEN")
         if curr_status in ["OPEN", "PENDING_LIMIT", "TP1_BE_RUNNING", "TP2_LOCKED_RUNNING"]:
+            sym = s.get("symbol")
+
+            # -----------------------------------------------------------------
+            # 0. GROUND TRUTH: If trade was executed live on Binance & closed on Binance
+            # -----------------------------------------------------------------
+            if s.get("executed_live") and auto_trader and auto_trader.is_live_enabled():
+                if sym not in active_rp_syms:
+                    # Position closed on Binance Futures matching engine!
+                    user_trades = auto_trader.get_user_trades(sym, limit=10)
+                    realized_pnl = 0.0
+                    if user_trades:
+                        entry_ref = s.get("live_entry_ts", 0) - 60000
+                        recent_ut = [tr for tr in user_trades if int(tr.get("time", 0)) >= entry_ref] or user_trades
+                        realized_pnl = sum(float(tr.get("realizedPnl", 0.0)) - float(tr.get("commission", 0.0)) for tr in recent_ut)
+
+                    s["realized_pnl_usdt"] = round(realized_pnl, 2)
+                    now_utc_str = datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M')
+                    s["resolved_at"] = now_utc_str
+                    s["resolved_at_utc"] = now_utc_str
+                    s["resolved_ts"] = int(datetime.now(timezone.utc).timestamp() * 1000)
+
+                    if realized_pnl > 0:
+                        s["status"] = f"WIN (+${realized_pnl:.2f} USDT)"
+                        s["outcome_pnl"] = round(realized_pnl / float(s.get("executed_margin", 2.5) or 2.5), 2)
+                    elif realized_pnl < 0:
+                        s["status"] = "LOSS (SL Hit)"
+                        s["outcome_pnl"] = -1.0
+                    else:
+                        s["status"] = "CLOSED (Break-Even)"
+                        s["outcome_pnl"] = 0.0
+
+                    if not s.get("notified_live_close"):
+                        s["notified_live_close"] = True
+                        send_telegram_live_close(sym, realized_pnl, s["status"], s.get("outcome_pnl", 0.0))
+                    continue
+
             sig_ts = s.get("timestamp", 0)
             kl = get_klines(s["symbol"], interval="1h", limit=60)
             if not kl:
@@ -1642,6 +1687,7 @@ def check_and_resolve_open_trades(news_shield=None):
                     s["tp"] = ls.get("raw_limit_tp", s["tp"])
                     s["tp_str"] = fmt_price(s["tp"])
                     s["filled_at"] = datetime.now().strftime('%Y-%m-%d %H:%M')
+                    s["fill_ts"] = now_ts
                     if not s.get("notified_fill"):
                         s["notified_fill"] = True
                         
@@ -1715,7 +1761,7 @@ def check_and_resolve_open_trades(news_shield=None):
             # 2. ACTIVE TRADES: Multi-Stage Trailing Break-Even & Safe Execution
             # -----------------------------------------------------------------
             if s["status"] in ["OPEN", "TP1_BE_RUNNING", "TP2_LOCKED_RUNNING"]:
-                ref_ts = s.get("live_entry_ts") or sig_ts
+                ref_ts = s.get("fill_ts") or s.get("live_entry_ts") or sig_ts
                 future_bars = [bar for bar in kl if (bar[0] + 3600000) >= ref_ts]
                 for bar in future_bars:
                     high = float(bar[2])
@@ -1860,8 +1906,8 @@ def check_and_resolve_open_trades(news_shield=None):
                             s["status"] = f"WIN (+${realized_pnl:.2f} USDT)"
                             s["outcome_pnl"] = round(realized_pnl / float(s.get("executed_margin", 2.5) or 2.5), 2)
                         elif realized_pnl < 0:
-                            s["status"] = f"CLOSED (-${abs(realized_pnl):.2f} USDT)"
-                            s["outcome_pnl"] = round(realized_pnl / float(s.get("executed_margin", 2.5) or 2.5), 2)
+                            s["status"] = "LOSS (SL Hit)"
+                            s["outcome_pnl"] = -1.0
                         else:
                             s["status"] = "CLOSED (Break-Even)"
                             s["outcome_pnl"] = 0.0
