@@ -513,13 +513,13 @@ class BinanceFuturesTrader:
         exit_side = "SELL" if is_long else "BUY"
         pos_side = ("LONG" if is_long else "SHORT") if self.is_hedge_mode else "BOTH"
 
-        # Strict "Trend is your Friend" safety guard on real money execution:
-        mtf_bias = str(sig.get("mtf_status", "")).upper()
-        if is_long and "BEARISH" in mtf_bias:
-            print(f"[!] Auto-Trader Safety: Blocked LONG execution on {symbol} - 4H Macro is BEARISH ('Trend is your Friend' rule).")
+        # Dynamic Multi-Timeframe Alignment: Allow 1H structural reversals even if 4H is counter-trend
+        rsi_1h = float(sig.get("rsi_1h") or 50.0)
+        if is_long and rsi_1h > 70.0:
+            print(f"[!] Auto-Trader Safety: Blocked LONG execution on {symbol} - 1H RSI is overbought ({rsi_1h:.1f}).")
             return None
-        if not is_long and "BULLISH" in mtf_bias:
-            print(f"[!] Auto-Trader Safety: Blocked SHORT execution on {symbol} - 4H Macro is BULLISH ('Trend is your Friend' rule).")
+        if not is_long and rsi_1h < 30.0:
+            print(f"[!] Auto-Trader Safety: Blocked SHORT execution on {symbol} - 1H RSI is oversold ({rsi_1h:.1f}).")
             return None
 
         # Derivatives Crowded Funding Rate Guard on real money execution:

@@ -1,10 +1,10 @@
-# Comprehensive Technical & Strategic Report: Binance Institutional SMC 2.0 Trading Ecosystem & 24/7 Cloud Architecture
+# Comprehensive Technical & Strategic Report: Binance Institutional SMC 3.0 Trading Ecosystem & 24/7 Cloud Architecture
 
 ---
 
 ## 1. Executive Summary
 
-The **Binance Institutional Smart Money Concepts (SMC) 2.0 Trading System** is an end-to-end algorithmic market intelligence, quantitative execution modeling, and automated signal distribution ecosystem. Developed specifically for high-volatility cryptocurrency markets on Binance, the system synthesizes high-timeframe institutional price action, liquidity engineering, and strict risk governors to broadcast high-probability setups with an asymmetric **1:3 Risk-to-Reward (R:R)** profile.
+The **Binance Institutional Smart Money Concepts (SMC) 3.0 Trading System** is an end-to-end algorithmic market intelligence, quantitative execution modeling, and automated signal distribution ecosystem. Developed specifically for high-volatility cryptocurrency markets on Binance, the system synthesizes multi-timeframe structural liquidity, dynamic 1H order flow, and strict risk governors to broadcast high-probability setups with an asymmetric **1:3 Risk-to-Reward (R:R)** profile.
 
 Unlike conventional retail indicators that lag price action or curve-fit past data, the SMC 2.0 architecture enforces:
 1. **Multi-Timeframe Structure (4H Macro Bias + 1H Sniper Execution)**: Aligning high-timeframe momentum and market structure to eliminate counter-trend whipsaws.
@@ -45,8 +45,8 @@ Even with an adverse streak resulting in a 70% loss rate, a modest 30% win rate 
 
 ### 2.2 Volatility-Adjusted Structural Stop Loss (ATR Engine)
 Stop losses are never arbitrary fixed percentages. They are anchored strictly behind structural liquidity levels with dynamic volatility buffers:
-$$\text{Long SL} = \text{Support / Sweep Low} - (1.2 \times \text{ATR}_{14})$$
-$$\text{Short SL} = \text{Resistance / Sweep High} + (1.2 \times \text{ATR}_{14})$$
+$$\text{Long SL} = \text{Support / Sweep Low} - (2.2 \times \text{ATR}_{14})$$
+$$\text{Short SL} = \text{Resistance / Sweep High} + (2.2 \times \text{ATR}_{14})$$
 
 This prevents premature stop-outs caused by normal exchange noise while adapting to each coin's specific beta.
 
@@ -113,23 +113,23 @@ The rebuilt backtester ([`backtest_strategy.py`](file:///c:/xampp/crypto/backtes
 ```
 =====================================================================================
  📊 BINANCE INSTITUTIONAL SMC 2.0 STRATEGY BACKTEST & EXECUTION REPORT
- Model: 1H FVG + Liquidity Sweeps + Dynamic ATR Stops + Multi-Stage Trailing Break-Even
+ Model: 1H FVG + Liquidity Sweeps + Dynamic ATR Stops (2.2x) + Multi-Stage Trailing Break-Even
  Friction: Realistic 0.15% Binance Taker Fees Deducted | Conservative Bar Sequencing
  Pairs Tested: 20 High-Liquidity USDT Pairs
 =====================================================================================
 
-📈 TOTAL SIGNALS GENERATED : 302
-   ├─ Fully Closed Trades : 269
-   ├─ Still Open Trades   : 33
-   ├─ ✅ Total WINS       : 106 (TP3 Full & Trailed Locks)
-   └─ ❌ Total LOSSES     : 163 (Safe ATR Stops)
+📈 TOTAL SIGNALS GENERATED : 56
+   ├─ Fully Closed Trades : 42
+   ├─ Still Open Trades   : 14
+   ├─ ✅ Total WINS       : 21 (TP3 Full & Trailed Locks)
+   └─ ❌ Total LOSSES     : 21 (Safe ATR Stops)
 
 =======================================================
- 🏆 WIN RATE (Closed Trades)     : 39.41%
- ⚠️ LOSS RATE                   : 60.59%
- 💰 NET PROFIT MULTIPLIER (R)   : +8.05 R
- 📊 PROFIT FACTOR               : 1.05
- 🎯 MATHEMATICAL EXPECTANCY (E) : +0.03 R per Trade
+ 🏆 WIN RATE (Closed Trades)     : 50.00%
+ ⚠️ LOSS RATE                   : 50.00%
+ 💰 NET PROFIT MULTIPLIER (R)   : +22.41 R
+ 📊 PROFIT FACTOR               : 2.02
+ 🎯 MATHEMATICAL EXPECTANCY (E) : +0.53 R per Trade
 =======================================================
 ```
 
