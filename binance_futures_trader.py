@@ -513,12 +513,27 @@ class BinanceFuturesTrader:
         exit_side = "SELL" if is_long else "BUY"
         pos_side = ("LONG" if is_long else "SHORT") if self.is_hedge_mode else "BOTH"
 
-        # Dynamic Multi-Timeframe Alignment: Allow 1H structural reversals even if 4H is counter-trend
+        # Multi-Timeframe Alignment & Counter-Trend Liquidity Protection:
+        mtf_bias = str(sig.get("mtf_status", "")).upper()
+        sweep_txt = str(sig.get("sweep", "")).lower()
+        has_liquidity_sweep = "swept" in sweep_txt or "sweep" in sweep_txt
+
+        # Institutional Rule: In 4H Bearish trend, ONLY allow Long if a verified sell-side liquidity sweep occurred
+        if is_long and "BEARISH" in mtf_bias and not has_liquidity_sweep:
+            print(f"[!] Auto-Trader Safety: Blocked counter-trend LONG execution on {symbol} - 4H Macro is BEARISH without Sell-Side Liquidity Sweep.")
+            return None
+
+        # Institutional Rule: In 4H Bullish trend, ONLY allow Short if a verified buy-side liquidity sweep occurred
+        if not is_long and "BULLISH" in mtf_bias and not has_liquidity_sweep:
+            print(f"[!] Auto-Trader Safety: Blocked counter-trend SHORT execution on {symbol} - 4H Macro is BULLISH without Buy-Side Liquidity Sweep.")
+            return None
+
+        # 1H RSI Momentum Exhaustion Guard
         rsi_1h = float(sig.get("rsi_1h") or 50.0)
-        if is_long and rsi_1h > 70.0:
+        if is_long and rsi_1h > 72.0:
             print(f"[!] Auto-Trader Safety: Blocked LONG execution on {symbol} - 1H RSI is overbought ({rsi_1h:.1f}).")
             return None
-        if not is_long and rsi_1h < 30.0:
+        if not is_long and rsi_1h < 28.0:
             print(f"[!] Auto-Trader Safety: Blocked SHORT execution on {symbol} - 1H RSI is oversold ({rsi_1h:.1f}).")
             return None
 
