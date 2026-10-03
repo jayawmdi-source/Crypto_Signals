@@ -2378,7 +2378,7 @@ def scan_all_pairs():
             pairs.append(s_sym)
 
     print("=" * 95)
-    print(" 🎯 BINANCE INSTITUTIONAL SMC 3.0 ENGINE (DYNAMIC DUAL-DIRECTION MTF + FVG + 2.8x ATR STOPS)")
+    print(" 🎯 DMD SMC PRO 3.0 ENGINE (DYNAMIC DUAL-DIRECTION MTF + FVG + 2.8x ATR STOPS)")
     print(f" Timestamp: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} (Local)")
     print(f" Active Session: {session_info['badge']} ({session_info['desc']})")
     cb_txt = "🟢 NORMAL SHIELD"
@@ -2468,7 +2468,7 @@ def scan_all_pairs():
 
     payload = {
         "updated_at": datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-        "filter": "Institutional SMC 3.0: Dynamic Dual-Direction MTF + FVG + Liquidity Sweep + 2.8x ATR Stops (1:3 R:R)",
+        "filter": "DMD SMC Pro 3.0: Dynamic Dual-Direction MTF + FVG + Liquidity Sweep + 2.8x ATR Stops (1:3 R:R)",
         "session": session_info,
         "circuit_breaker": history.get("circuit_breaker", {}),
         "news_shield": news_shield,
@@ -2617,7 +2617,7 @@ def generate_html_dashboard(data, output_path):
     <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
     <meta http-equiv="Pragma" content="no-cache">
     <meta http-equiv="Expires" content="0">
-    <title>Binance Institutional SMC 3.0 Ecosystem - Institutional Live Scanner</title>
+    <title>DMD SMC Pro 3.0 - Institutional Live Scanner</title>
     <link rel="preconnect" href="https://cdn.jsdelivr.net">
     <link rel="preconnect" href="https://cdnjs.cloudflare.com">
     <link rel="dns-prefetch" href="https://data-api.binance.vision">
@@ -2856,7 +2856,7 @@ def generate_html_dashboard(data, output_path):
             <span class="navbar-brand mb-0 h1 d-flex align-items-center">
                 <i class="fa-solid fa-shield-halved text-warning me-2 fs-3"></i>
                 <div>
-                    <span class="fw-bold">Binance SMC 3.0</span>
+                    <span class="fw-bold">DMD SMC Pro 3.0</span>
                     <span class="badge bg-warning text-dark ms-2" style="font-size: 0.7rem;">Institutional Quantitative Engine</span>
                 </div>
             </span>
