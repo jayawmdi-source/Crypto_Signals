@@ -1207,6 +1207,7 @@ def analyze_symbol(symbol, anchored_signal=None, btc_sentiment=None, session_inf
                 tp = entry + (risk * 3.0)
                 
                 reasons.append(f"4H Macro Bias: {mtf_4h['bias']} + Daily 20/50 EMA Bullish")
+                reasons.append(f"🏷️ Institutional Discount Zone: Price in Wholesale Discount Area (Fib 50%-61.8%)")
                 reasons.append(f"Holding S&R Base ${fmt_price(base_support)} (ATR Volatility Buffer: ${fmt_price(2.8 * atr_1h)})")
                 if bull_fvg_1h:
                     reasons.append(f"💧 Bullish FVG Active: [${fmt_price(bull_fvg_1h['bottom'])} - ${fmt_price(bull_fvg_1h['top'])}]")
@@ -1248,6 +1249,7 @@ def analyze_symbol(symbol, anchored_signal=None, btc_sentiment=None, session_inf
                 tp = entry - (risk * 3.0)
                 
                 reasons.append(f"4H Macro Bias: {mtf_4h['bias']} + Daily 20/50 EMA Bearish")
+                reasons.append(f"🏷️ Institutional Premium Zone: Price in Premium Sell Area (Fib 50%-61.8%)")
                 reasons.append(f"Testing Resistance Base ${fmt_price(base_res)} (ATR Buffer: ${fmt_price(2.8 * atr_1h)})")
                 if bear_fvg_1h:
                     reasons.append(f"💧 Bearish FVG Active: [${fmt_price(bear_fvg_1h['bottom'])} - ${fmt_price(bear_fvg_1h['top'])}]")
