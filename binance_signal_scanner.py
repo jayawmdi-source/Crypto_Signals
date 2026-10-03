@@ -2617,7 +2617,7 @@ def generate_html_dashboard(data, output_path):
     <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
     <meta http-equiv="Pragma" content="no-cache">
     <meta http-equiv="Expires" content="0">
-    <title>DMD SMC Pro 2.0 - Institutional Live Scanner</title>
+    <title>Binance Institutional SMC 3.0 Ecosystem - Institutional Live Scanner</title>
     <link rel="preconnect" href="https://cdn.jsdelivr.net">
     <link rel="preconnect" href="https://cdnjs.cloudflare.com">
     <link rel="dns-prefetch" href="https://data-api.binance.vision">
@@ -2856,7 +2856,7 @@ def generate_html_dashboard(data, output_path):
             <span class="navbar-brand mb-0 h1 d-flex align-items-center">
                 <i class="fa-solid fa-shield-halved text-warning me-2 fs-3"></i>
                 <div>
-                    <span class="fw-bold">DMD SMC Pro 2.0</span>
+                    <span class="fw-bold">Binance SMC 3.0</span>
                     <span class="badge bg-warning text-dark ms-2" style="font-size: 0.7rem;">Institutional Quantitative Engine</span>
                 </div>
             </span>
