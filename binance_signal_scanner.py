@@ -956,20 +956,6 @@ def analyze_symbol(symbol, anchored_signal=None, btc_sentiment=None, session_inf
     dist_to_support_pct = ((current_price - nearest_support) / current_price) * 100
     dist_to_resistance_pct = ((nearest_resistance - current_price) / current_price) * 100
 
-    # -------------------------------------------------------------------------
-    # Quantitative Fibonacci Dealing Range (24H - 48H Swing High / Low)
-    # -------------------------------------------------------------------------
-    dealing_candles = klines_1h[-48:] if len(klines_1h) >= 48 else klines_1h
-    highs_range = [float(k[2]) for k in dealing_candles]
-    lows_range = [float(k[3]) for k in dealing_candles]
-    swing_high = max(highs_range) if highs_range else current_price
-    swing_low = min(lows_range) if lows_range else current_price
-    dealing_range = swing_high - swing_low
-    fib_pos = ((current_price - swing_low) / dealing_range) if dealing_range > 0 else 0.50
-    fib_pos_pct = fib_pos * 100.0
-    is_in_discount = fib_pos <= 0.55
-    is_in_premium = fib_pos >= 0.45
-
     # Strict S/R Flip Validation: Broken recently (within 15 days) with volume expansion
     is_sr_flip = False
     flip_lvl = None
@@ -1106,8 +1092,7 @@ def analyze_symbol(symbol, anchored_signal=None, btc_sentiment=None, session_inf
         # TIER 2: SNIPER EXTREME REVERSALS (RSI Exhaustion + CHoCH + Sweep)
         # ---------------------------------------------------------------------
         if is_extreme_overbought and choch_data["has_bearish_choch"]:
-            has_sweep = sweep_1h.get("has_bear_sweep", False)
-            macro_trend_conflict = ((mtf_4h["bias"] == "BULLISH") or ema_bullish) and (not has_sweep)
+            macro_trend_conflict = (mtf_4h["bias"] == "BULLISH") or ema_bullish
             has_demand_conflict = (bull_ob_1h and (bull_ob_1h.get('is_testing') or (bull_ob_1h['bottom'] * 0.99 <= entry <= bull_ob_1h['top'] * 1.005))) or \
                                   (bull_fvg_1h and (bull_fvg_1h['bottom'] * 0.99 <= entry <= bull_fvg_1h['top'] * 1.02))
             btc_blocks_short = btc_sentiment and not btc_sentiment.get("allow_shorts", True) and symbol != "BTCUSDT"
@@ -1116,8 +1101,8 @@ def analyze_symbol(symbol, anchored_signal=None, btc_sentiment=None, session_inf
                 signal_type = "WATCHLIST"
                 tier_badge = "WATCHLIST"
                 if macro_trend_conflict:
-                    trade_setup = f"Short Blocked: 4H Macro is BULLISH (No Liquidity Sweep)"
-                    reasons.append(f"⚠️ Trend Shield: Blocked Counter-Trend Short against 4H {mtf_4h['bias']} (Missing Buy-Side Liquidity Sweep)")
+                    trade_setup = f"Short Blocked: 4H/Daily Macro is BULLISH"
+                    reasons.append(f"⚠️ Trend Shield: Blocked Counter-Trend Short against 4H {mtf_4h['bias']} & Daily Bullish trend ('Trend is Friend' rule)")
                 if has_demand_conflict:
                     reasons.append(f"⚠️ Sniper Short Blocked: Sitting directly on/near 1H Bullish Demand Block or FVG")
                 if btc_blocks_short:
@@ -1128,20 +1113,17 @@ def analyze_symbol(symbol, anchored_signal=None, btc_sentiment=None, session_inf
                 trade_setup = "Extreme Overbought (RSI > 80) + 1H Bearish CHoCH"
                 choch_badge = "1H CHoCH Confirmed 🔴"
                 
-                # Dynamic ATR Stop Loss: Anchor above swing high + 1.8 * ATR
+                # Dynamic ATR Stop Loss: Anchor above swing high + 2.2 * ATR
                 sl_base = max(choch_data["recent_high"], entry * 1.01)
-                sl = sl_base + (1.8 * atr_1h)
+                sl = sl_base + (2.2 * atr_1h)
                 risk = sl - entry
-                if risk / entry < 0.020:
-                    sl = entry * 1.020
-                    risk = sl - entry
-                elif risk / entry > 0.045:
-                    sl = entry * 1.045
+                if risk / entry < 0.025:
+                    sl = entry * 1.025
                     risk = sl - entry
                 trailing_sl = sl
                 tp1 = entry - (risk * 1.5)
                 tp2 = entry - (risk * 2.0)
-                tp = entry - (risk * 2.5)
+                tp = entry - (risk * 3.0)
                 reasons.append(f"Extreme RSI Overbought ({rsi_daily:.1f})")
                 reasons.append(f"Confirmed 1H Bearish CHoCH below ${choch_data['key_hl']}")
                 if sweep_1h["has_bear_sweep"]:
@@ -1150,8 +1132,7 @@ def analyze_symbol(symbol, anchored_signal=None, btc_sentiment=None, session_inf
                     reasons.append(f"💧 Bearish FVG Confluence [${fmt_price(bear_fvg_1h['bottom'])} - ${fmt_price(bear_fvg_1h['top'])}]")
 
         elif is_extreme_oversold and choch_data["has_bullish_choch"]:
-            has_sweep = sweep_1h.get("has_bull_sweep", False)
-            macro_trend_conflict = ((mtf_4h["bias"] == "BEARISH") or (not ema_bullish)) and (not has_sweep)
+            macro_trend_conflict = (mtf_4h["bias"] == "BEARISH") or (not ema_bullish)
             has_supply_conflict = (bear_ob_1h and (bear_ob_1h.get('is_testing') or (bear_ob_1h['bottom'] * 0.995 <= entry <= bear_ob_1h['top'] * 1.01))) or \
                                   (bear_fvg_1h and (bear_fvg_1h['bottom'] * 0.98 <= entry <= bear_fvg_1h['top'] * 1.01))
             btc_blocks_long = btc_sentiment and not btc_sentiment.get("allow_longs", True) and symbol != "BTCUSDT"
@@ -1160,8 +1141,8 @@ def analyze_symbol(symbol, anchored_signal=None, btc_sentiment=None, session_inf
                 signal_type = "WATCHLIST"
                 tier_badge = "WATCHLIST"
                 if macro_trend_conflict:
-                    trade_setup = f"Long Blocked: 4H Macro is BEARISH (No Liquidity Sweep)"
-                    reasons.append(f"⚠️ Trend Shield: Blocked Counter-Trend Long against 4H {mtf_4h['bias']} (Missing Sell-Side Liquidity Sweep)")
+                    trade_setup = f"Long Blocked: 4H/Daily Macro is BEARISH"
+                    reasons.append(f"⚠️ Trend Shield: Blocked Counter-Trend Long against 4H {mtf_4h['bias']} & Daily Bearish trend ('Trend is Friend' rule)")
                 if has_supply_conflict:
                     reasons.append(f"⚠️ Sniper Long Blocked: Sitting inside/near 1H Bearish Supply Block or FVG")
                 if btc_blocks_long:
@@ -1172,20 +1153,17 @@ def analyze_symbol(symbol, anchored_signal=None, btc_sentiment=None, session_inf
                 trade_setup = "Extreme Oversold (RSI < 20) + 1H Bullish CHoCH"
                 choch_badge = "1H CHoCH Confirmed 🟢"
                 
-                # Dynamic ATR Stop Loss: Anchor below swing low - 1.8 * ATR
+                # Dynamic ATR Stop Loss: Anchor below swing low - 2.2 * ATR
                 sl_base = min(choch_data["recent_low"], entry * 0.99)
-                sl = sl_base - (1.8 * atr_1h)
+                sl = sl_base - (2.2 * atr_1h)
                 risk = entry - sl
-                if risk / entry < 0.020:
-                    sl = entry * 0.980
-                    risk = entry - sl
-                elif risk / entry > 0.045:
-                    sl = entry * 0.955
+                if risk / entry < 0.025:
+                    sl = entry * 0.975
                     risk = entry - sl
                 trailing_sl = sl
                 tp1 = entry + (risk * 1.5)
                 tp2 = entry + (risk * 2.0)
-                tp = entry + (risk * 2.5)
+                tp = entry + (risk * 3.0)
                 reasons.append(f"Extreme RSI Oversold ({rsi_daily:.1f})")
                 reasons.append(f"Confirmed 1H Bullish CHoCH above ${choch_data['key_lh']}")
                 if sweep_1h["has_bull_sweep"]:
@@ -1217,26 +1195,20 @@ def analyze_symbol(symbol, anchored_signal=None, btc_sentiment=None, session_inf
                 if bull_ob_1h and bull_ob_1h['bottom'] < entry:
                     base_support = min(base_support, bull_ob_1h['bottom'])
                     
-                # Dynamic ATR Volatility Stop Loss (Institutional buffer: 1.8x ATR)
-                sl = base_support - (1.8 * atr_1h)
+                # Dynamic ATR Volatility Stop Loss
+                sl = base_support - (2.8 * atr_1h)
                 risk = entry - sl
-                if risk / entry < 0.020:
-                    sl = entry * 0.980
-                    risk = entry - sl
-                elif risk / entry > 0.045:
-                    sl = entry * 0.955
+                if risk / entry < 0.030:
+                    sl = entry * 0.970
                     risk = entry - sl
                 trailing_sl = sl
                 tp1 = entry + (risk * 1.5)
                 tp2 = entry + (risk * 2.0)
-                tp = entry + (risk * 2.5)
+                tp = entry + (risk * 3.0)
                 
                 reasons.append(f"4H Macro Bias: {mtf_4h['bias']} + Daily 20/50 EMA Bullish")
-                if is_in_discount:
-                    reasons.append(f"🏷️ Institutional Discount Zone: Wholesale Area ({fib_pos_pct:.1f}% Fib)")
-                else:
-                    reasons.append(f"⚖️ Dealing Range: Price near Equilibrium ({fib_pos_pct:.1f}% Fib)")
-                reasons.append(f"Holding S&R Base ${fmt_price(base_support)} (ATR Volatility Buffer: ${fmt_price(1.8 * atr_1h)})")
+                reasons.append(f"🏷️ Institutional Discount Zone: Price in Wholesale Discount Area (Fib 50%-61.8%)")
+                reasons.append(f"Holding S&R Base ${fmt_price(base_support)} (ATR Volatility Buffer: ${fmt_price(2.8 * atr_1h)})")
                 if bull_fvg_1h:
                     reasons.append(f"💧 Bullish FVG Active: [${fmt_price(bull_fvg_1h['bottom'])} - ${fmt_price(bull_fvg_1h['top'])}]")
                 if sweep_1h["has_bull_sweep"]:
@@ -1265,26 +1237,20 @@ def analyze_symbol(symbol, anchored_signal=None, btc_sentiment=None, session_inf
                 if bear_ob_1h and bear_ob_1h['top'] > entry:
                     base_res = max(base_res, bear_ob_1h['top'])
                     
-                # Dynamic ATR Volatility Stop Loss (Institutional buffer: 1.8x ATR)
-                sl = base_res + (1.8 * atr_1h)
+                # Dynamic ATR Volatility Stop Loss
+                sl = base_res + (2.8 * atr_1h)
                 risk = sl - entry
-                if risk / entry < 0.020:
-                    sl = entry * 1.020
-                    risk = sl - entry
-                elif risk / entry > 0.045:
-                    sl = entry * 1.045
+                if risk / entry < 0.030:
+                    sl = entry * 1.030
                     risk = sl - entry
                 trailing_sl = sl
                 tp1 = entry - (risk * 1.5)
                 tp2 = entry - (risk * 2.0)
-                tp = entry - (risk * 2.5)
+                tp = entry - (risk * 3.0)
                 
                 reasons.append(f"4H Macro Bias: {mtf_4h['bias']} + Daily 20/50 EMA Bearish")
-                if is_in_premium:
-                    reasons.append(f"🏷️ Institutional Premium Zone: Wholesale Sell Area ({fib_pos_pct:.1f}% Fib)")
-                else:
-                    reasons.append(f"⚖️ Dealing Range: Price near Equilibrium ({fib_pos_pct:.1f}% Fib)")
-                reasons.append(f"Testing Resistance Base ${fmt_price(base_res)} (ATR Buffer: ${fmt_price(1.8 * atr_1h)})")
+                reasons.append(f"🏷️ Institutional Premium Zone: Price in Premium Sell Area (Fib 50%-61.8%)")
+                reasons.append(f"Testing Resistance Base ${fmt_price(base_res)} (ATR Buffer: ${fmt_price(2.8 * atr_1h)})")
                 if bear_fvg_1h:
                     reasons.append(f"💧 Bearish FVG Active: [${fmt_price(bear_fvg_1h['bottom'])} - ${fmt_price(bear_fvg_1h['top'])}]")
                 if sweep_1h["has_bear_sweep"]:
@@ -1648,12 +1614,16 @@ def check_and_resolve_open_trades(news_shield=None):
         "notified_hard_stop": cb.get("notified_hard_stop", False)
     }
 
-    real_positions = []
+    real_positions = None
     active_rp_syms = set()
+    pos_sync_success = False
     if auto_trader and auto_trader.is_live_enabled():
         try:
-            real_positions = auto_trader.get_open_positions_detail()
-            active_rp_syms = {rp.get("symbol") for rp in real_positions if float(rp.get("position_amt", 0.0)) != 0}
+            res_details = auto_trader.get_open_positions_detail()
+            if res_details is not None:
+                real_positions = res_details
+                active_rp_syms = {rp.get("symbol") for rp in real_positions if float(rp.get("position_amt", 0.0)) != 0}
+                pos_sync_success = True
         except Exception as e_pos:
             print(f"[!] Warning fetching open positions for resolution: {e_pos}")
 
@@ -1663,9 +1633,9 @@ def check_and_resolve_open_trades(news_shield=None):
             sym = s.get("symbol")
 
             # -----------------------------------------------------------------
-            # 0. GROUND TRUTH: Sync live executed signals against Binance Futures positions
+            # 0. GROUND TRUTH: Sync all OPEN signals against Binance Futures live positions
             # -----------------------------------------------------------------
-            if s.get("executed_live") and auto_trader and auto_trader.is_live_enabled() and curr_status in ["OPEN", "TP1_BE_RUNNING", "TP2_LOCKED_RUNNING"]:
+            if pos_sync_success and auto_trader and auto_trader.is_live_enabled() and curr_status in ["OPEN", "TP1_BE_RUNNING", "TP2_LOCKED_RUNNING"]:
                 if sym not in active_rp_syms:
                     # Position closed or not open on Binance Futures matching engine!
                     user_trades = auto_trader.get_user_trades(sym, limit=10)
@@ -1950,18 +1920,19 @@ def check_and_resolve_open_trades(news_shield=None):
 
         # Sync live positions that closed on Binance matching engine & send Telegram Live Close Alerts
         try:
-            active_rp_syms = {rp.get("symbol") for rp in real_positions if float(rp.get("position_amt", 0.0)) != 0}
-            for s in existing_signals:
-                if s.get("executed_live") and s.get("status") in ["OPEN", "TP1_BE_RUNNING", "TP2_LOCKED_RUNNING"]:
-                    sym = s.get("symbol")
-                    if sym not in active_rp_syms:
-                        # Position closed on Binance Futures! Fetch exact trade fills & realized PnL
-                        user_trades = auto_trader.get_user_trades(sym, limit=10)
-                        realized_pnl = 0.0
-                        if user_trades:
-                            realized_pnl = sum(float(tr.get("realizedPnl", 0.0)) - float(tr.get("commission", 0.0)) for tr in user_trades)
-                        
-                        s["realized_pnl_usdt"] = round(realized_pnl, 2)
+            if real_positions is not None:
+                active_rp_syms = {rp.get("symbol") for rp in real_positions if float(rp.get("position_amt", 0.0)) != 0}
+                for s in existing_signals:
+                    if s.get("executed_live") and s.get("status") in ["OPEN", "TP1_BE_RUNNING", "TP2_LOCKED_RUNNING"]:
+                        sym = s.get("symbol")
+                        if sym not in active_rp_syms:
+                            # Position closed on Binance Futures! Fetch exact trade fills & realized PnL
+                            user_trades = auto_trader.get_user_trades(sym, limit=10)
+                            realized_pnl = 0.0
+                            if user_trades:
+                                realized_pnl = sum(float(tr.get("realizedPnl", 0.0)) - float(tr.get("commission", 0.0)) for tr in user_trades)
+                            
+                            s["realized_pnl_usdt"] = round(realized_pnl, 2)
                         now_utc_str = datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M')
                         s["resolved_at"] = now_utc_str
                         s["resolved_at_utc"] = now_utc_str
@@ -2142,22 +2113,14 @@ def record_new_signals_to_history(actionable_signals, history_data, open_symbols
                 "outcome_pnl": 0.0
             }
             if initial_status == "OPEN":
-                # Multi-Timeframe Alignment & Counter-Trend Sweep Protection:
-                sig_type_str = str(act.get("signal", "")).upper()
-                macro_bias_str = str(act.get("mtf_status", "")).upper()
-                is_long_act = "BUY" in sig_type_str or "LONG" in sig_type_str
-                sweep_txt = str(act.get("sweep", "")).lower()
-                has_sweep = "swept" in sweep_txt or "sweep" in sweep_txt
-
-                if (is_long_act and "BEARISH" in macro_bias_str and not has_sweep) or \
-                   (not is_long_act and "BULLISH" in macro_bias_str and not has_sweep):
-                    print(f"[!] Safety Shield: Blocked naked counter-trend trade for {sym} (Signal={sig_type_str}, 4H Macro={macro_bias_str}) - Missing Liquidity Sweep confirmation.")
-                    continue
+                # Dynamic Multi-Timeframe Alignment: Allow 1H structural setups in both directions
+                pass
 
                 if auto_trader and auto_trader.is_live_enabled():
                     cb = history_data.get("circuit_breaker", {})
                     act["is_defensive"] = cb.get("is_defensive", False)
-                    act["risk_pct_override"] = 0.75 if cb.get("is_defensive") else 1.5
+                    risk_val = float(os.environ.get("BINANCE_RISK_PCT_PER_TRADE", 3.0))
+                    act["risk_pct_override"] = (risk_val / 2.0) if cb.get("is_defensive") else risk_val
                     exec_res = auto_trader.execute_signal(act)
                     if exec_res and exec_res.get("executed"):
                         new_item["binance_order_id"] = exec_res.get("order_id")
@@ -2288,8 +2251,8 @@ def get_btc_macro_sentiment():
     
     change_3h = ((current_p - closes[-4]) / closes[-4]) * 100 if len(closes) >= 4 else 0.0
     
-    is_dumping = change_3h < -1.0 or (current_p < ema20 and rsi < 40)
-    is_pumping = change_3h > 2.0 or (current_p > ema20 and rsi > 74)
+    is_dumping = change_3h < -0.5 or (current_p < ema20 and rsi < 48)
+    is_pumping = change_3h > 1.8 or (current_p > ema20 and rsi > 70)
     
     allow_longs = not is_dumping
     allow_shorts = not is_pumping
@@ -2423,7 +2386,7 @@ def scan_all_pairs():
             pairs.append(s_sym)
 
     print("=" * 95)
-    print(" 🎯 DMD SMC PRO 3.1 INSTITUTIONAL ENGINE (HTF SWEEPS + FIB DEALING RANGE + 1.8x ATR STOPS)")
+    print(" 🎯 DMD SMC PRO 3.0 ENGINE (DYNAMIC DUAL-DIRECTION MTF + FVG + 2.8x ATR STOPS)")
     print(f" Timestamp: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} (Local)")
     print(f" Active Session: {session_info['badge']} ({session_info['desc']})")
     cb_txt = "🟢 NORMAL SHIELD"
@@ -2513,7 +2476,7 @@ def scan_all_pairs():
 
     payload = {
         "updated_at": datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-        "filter": "DMD SMC Pro 3.1: HTF Sweeps + Quantitative Fib Dealing Range + 1.8x ATR Stops (1:2.5 R:R)",
+        "filter": "DMD SMC Pro 3.0: Dynamic Dual-Direction MTF + FVG + Liquidity Sweep + 2.8x ATR Stops (1:3 R:R)",
         "session": session_info,
         "circuit_breaker": history.get("circuit_breaker", {}),
         "news_shield": news_shield,

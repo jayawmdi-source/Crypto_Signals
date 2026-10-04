@@ -513,27 +513,12 @@ class BinanceFuturesTrader:
         exit_side = "SELL" if is_long else "BUY"
         pos_side = ("LONG" if is_long else "SHORT") if self.is_hedge_mode else "BOTH"
 
-        # Multi-Timeframe Alignment & Counter-Trend Liquidity Protection:
-        mtf_bias = str(sig.get("mtf_status", "")).upper()
-        sweep_txt = str(sig.get("sweep", "")).lower()
-        has_liquidity_sweep = "swept" in sweep_txt or "sweep" in sweep_txt
-
-        # Institutional Rule: In 4H Bearish trend, ONLY allow Long if a verified sell-side liquidity sweep occurred
-        if is_long and "BEARISH" in mtf_bias and not has_liquidity_sweep:
-            print(f"[!] Auto-Trader Safety: Blocked counter-trend LONG execution on {symbol} - 4H Macro is BEARISH without Sell-Side Liquidity Sweep.")
-            return None
-
-        # Institutional Rule: In 4H Bullish trend, ONLY allow Short if a verified buy-side liquidity sweep occurred
-        if not is_long and "BULLISH" in mtf_bias and not has_liquidity_sweep:
-            print(f"[!] Auto-Trader Safety: Blocked counter-trend SHORT execution on {symbol} - 4H Macro is BULLISH without Buy-Side Liquidity Sweep.")
-            return None
-
-        # 1H RSI Momentum Exhaustion Guard
+        # Dynamic Multi-Timeframe Alignment: Allow 1H structural reversals even if 4H is counter-trend
         rsi_1h = float(sig.get("rsi_1h") or 50.0)
-        if is_long and rsi_1h > 72.0:
+        if is_long and rsi_1h > 70.0:
             print(f"[!] Auto-Trader Safety: Blocked LONG execution on {symbol} - 1H RSI is overbought ({rsi_1h:.1f}).")
             return None
-        if not is_long and rsi_1h < 28.0:
+        if not is_long and rsi_1h < 30.0:
             print(f"[!] Auto-Trader Safety: Blocked SHORT execution on {symbol} - 1H RSI is oversold ({rsi_1h:.1f}).")
             return None
 
@@ -583,9 +568,10 @@ class BinanceFuturesTrader:
         avail_usdt = balances.get("available_balance", 0.0)
         wallet_usdt = balances.get("wallet_balance", avail_usdt)
         
-        # Dynamic Risk Allocation: Risk 1.5% of Available USDT Equity (or 0.75% in Defensive Mode)
+        # Dynamic Risk Allocation: Risk 3.0% of Available USDT Equity (or 1.5% in Defensive Mode)
         # Formula: Qty = (Equity * Risk%) / |Entry - StopLoss|
-        size_pct = float(sig.get("risk_pct_override") or (0.75 if sig.get("is_defensive") else 1.5))
+        default_risk_pct = float(os.environ.get("BINANCE_RISK_PCT_PER_TRADE", 3.0))
+        size_pct = float(sig.get("risk_pct_override") or (default_risk_pct / 2.0 if sig.get("is_defensive") else default_risk_pct))
         risk_usdt = avail_usdt * (size_pct / 100.0)
         stop_dist = abs(entry_price - sl_price)
         
