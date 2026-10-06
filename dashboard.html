@@ -362,8 +362,8 @@
             <div class="col-12 col-md-3">
                 <div class="stat-card">
                     <div class="stat-title"><i class="fa-solid fa-trophy text-warning me-1"></i> Real Live Win Rate</div>
-                    <div class="stat-value val-yellow" id="stat-win-rate">18.2%</div>
-                    <small class="text-muted">Binance Executed (4W / 18L)</small>
+                    <div class="stat-value val-yellow" id="stat-win-rate">17.4%</div>
+                    <small class="text-muted" id="stat-win-rate-sub">Binance Executed (4W / 19L)</small>
                 </div>
             </div>
             <div class="col-12 col-md-3">
@@ -376,7 +376,7 @@
             <div class="col-12 col-md-3">
                 <div class="stat-card">
                     <div class="stat-title"><i class="fa-solid fa-xmark text-danger me-1"></i> Real Live Losses</div>
-                    <div class="stat-value val-red" id="stat-losses">18</div>
+                    <div class="stat-value val-red" id="stat-losses">19</div>
                     <small class="text-muted">Binance Hardware SL Hit (-1.0R)</small>
                 </div>
             </div>
@@ -8528,6 +8528,10 @@
                 const winRateEl = document.getElementById('stat-win-rate');
                 if (winRateEl && hist.win_rate_pct !== undefined) {
                     winRateEl.innerText = `${hist.win_rate_pct.toFixed(1)}%`;
+                }
+                const winRateSubEl = document.getElementById('stat-win-rate-sub');
+                if (winRateSubEl && hist.wins !== undefined && hist.losses !== undefined) {
+                    winRateSubEl.innerText = `Binance Executed (${hist.wins}W / ${hist.losses}L)`;
                 }
                 const winsEl = document.getElementById('stat-wins');
                 if (winsEl && hist.wins !== undefined) {

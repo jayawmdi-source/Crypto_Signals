@@ -266,12 +266,13 @@ class BinanceFuturesTrader:
                 return open_symbols
         except Exception as e:
             print(f"[!] Error fetching positionRisk for all symbols: {e}")
-        return []
+            return None
+        return None
 
     def get_open_positions_detail(self):
         """Fetch full details for all actively open positions on Binance Futures"""
         if not self.is_configured():
-            return []
+            return None
         try:
             params = self._sign_request()
             resp = self.session.get(f"{BASE_URL}/fapi/v2/positionRisk", params=params, timeout=8)
@@ -301,9 +302,12 @@ class BinanceFuturesTrader:
                             "liquidation_price": float(p.get("liquidationPrice", 0.0))
                         })
                 return open_positions
+            print(f"[!] Warning: positionRisk returned status {resp.status_code}: {resp.text}")
+            return None
         except Exception as e:
             print(f"[!] Error fetching position details: {e}")
-        return []
+            return None
+        return None
 
     def get_recent_income(self, limit=100, income_type=None):
         """Fetch recent realized PnL and trade income from Binance Futures"""
@@ -513,19 +517,20 @@ class BinanceFuturesTrader:
         exit_side = "SELL" if is_long else "BUY"
         pos_side = ("LONG" if is_long else "SHORT") if self.is_hedge_mode else "BOTH"
 
-        # Multi-Timeframe Alignment & Counter-Trend Liquidity Protection:
+        # Multi-Timeframe Alignment & Directional Counter-Trend Liquidity Protection:
         mtf_bias = str(sig.get("mtf_status", "")).upper()
-        sweep_txt = str(sig.get("sweep", "")).lower()
-        has_liquidity_sweep = "swept" in sweep_txt or "sweep" in sweep_txt
+        sweep_txt = str(sig.get("sweep") or sig.get("sweep_str") or "").lower()
+        has_sell_side_sweep = bool(sig.get("has_bull_sweep")) or ("sell-side" in sweep_txt or "sell side" in sweep_txt or "sell_side" in sweep_txt)
+        has_buy_side_sweep = bool(sig.get("has_bear_sweep")) or ("buy-side" in sweep_txt or "buy side" in sweep_txt or "buy_side" in sweep_txt)
 
-        # Institutional Rule: In 4H Bearish trend, ONLY allow Long if a verified sell-side liquidity sweep occurred
-        if is_long and "BEARISH" in mtf_bias and not has_liquidity_sweep:
-            print(f"[!] Auto-Trader Safety: Blocked counter-trend LONG execution on {symbol} - 4H Macro is BEARISH without Sell-Side Liquidity Sweep.")
+        # Institutional Rule: In 4H Bearish trend, ONLY allow Long if a verified Sell-Side liquidity sweep occurred (lows swept & reclaimed)
+        if is_long and "BEARISH" in mtf_bias and not has_sell_side_sweep:
+            print(f"[!] Auto-Trader Safety: Blocked counter-trend LONG execution on {symbol} - 4H Macro is BEARISH without verified Sell-Side Liquidity Sweep.")
             return None
 
-        # Institutional Rule: In 4H Bullish trend, ONLY allow Short if a verified buy-side liquidity sweep occurred
-        if not is_long and "BULLISH" in mtf_bias and not has_liquidity_sweep:
-            print(f"[!] Auto-Trader Safety: Blocked counter-trend SHORT execution on {symbol} - 4H Macro is BULLISH without Buy-Side Liquidity Sweep.")
+        # Institutional Rule: In 4H Bullish trend, ONLY allow Short if a verified Buy-Side liquidity sweep occurred (highs swept & rejected)
+        if not is_long and "BULLISH" in mtf_bias and not has_buy_side_sweep:
+            print(f"[!] Auto-Trader Safety: Blocked counter-trend SHORT execution on {symbol} - 4H Macro is BULLISH without verified Buy-Side Liquidity Sweep.")
             return None
 
         # 1H RSI Momentum Exhaustion Guard
