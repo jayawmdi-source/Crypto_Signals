@@ -210,8 +210,8 @@ def backtest_symbol_smc(symbol):
                 is_sl_hit = (f_low <= curr_sl) if is_long else (f_high >= curr_sl)
                 if is_sl_hit:
                     if trade["status"] == "TP2_LOCKED":
-                        trade["outcome"] = "WIN (TP2 Trailed / Locked +1.5R)"
-                        trade["pnl_r"] = +1.5 - (FEE_ROUNDTRIP_PCT / trade["risk_pct"])
+                        trade["outcome"] = "WIN (TP2 Trailed / Locked +1.62R)"
+                        trade["pnl_r"] = +1.625 - (FEE_ROUNDTRIP_PCT / trade["risk_pct"])
                     elif trade["status"] == "TP1_BE":
                         trade["outcome"] = "WIN (TP1 Hit / Break-Even Exit)"
                         trade["pnl_r"] = +0.75 - (FEE_ROUNDTRIP_PCT / trade["risk_pct"])
@@ -221,11 +221,11 @@ def backtest_symbol_smc(symbol):
                     trade["exit_date"] = dates[f]
                     break
 
-                # TP3 Full Target
+                # TP3 Full Target (Weighted Return: 50% @ 1.5R + 25% @ 2.0R + 25% @ 3.0R = +2.0R Net)
                 is_tp3_hit = (f_high >= trade["tp3"]) if is_long else (f_low <= trade["tp3"])
                 if is_tp3_hit:
-                    trade["outcome"] = "WIN (1:3 Full TP3 Hit)"
-                    trade["pnl_r"] = +3.0 - (FEE_ROUNDTRIP_PCT / trade["risk_pct"])
+                    trade["outcome"] = "WIN (1:3 Full TP3 Hit +2.0R Net)"
+                    trade["pnl_r"] = +2.0 - (FEE_ROUNDTRIP_PCT / trade["risk_pct"])
                     trade["exit_date"] = dates[f]
                     break
 

@@ -306,10 +306,10 @@ def send_telegram_resolution(sig, event_type):
     sym = sig.get('symbol') if sig else "PORTFOLIO"
     if event_type == "WIN_TP3":
         msg = (
-            f"🎉 <b>1:3 FULL TARGET HIT! (WIN +3.0R)</b> 🏆\n"
+            f"🎉 <b>1:3 FULL TARGET HIT! (WIN +2.0R Net)</b> 🏆\n"
             f"━━━━━━━━━━━━━━━━━━━━\n"
             f"🪙 #{sym} reached its <b>1:3 Full Take Profit</b> Target (<code>${sig.get('tp_str', sig.get('tp'))}</code>)!\n"
-            f"💰 <b>Net Gain: +3.0 R Profit!</b>\n"
+            f"💰 <b>Net Realized Gain: +2.0 R Profit!</b> (Weighted: 50% @ 1.5R + 25% @ 2.0R + 25% @ 3.0R)\n"
             f"✅ Trade completed with maximum institutional target."
         )
     elif event_type == "WIN_TP2":
@@ -331,10 +331,10 @@ def send_telegram_resolution(sig, event_type):
         )
     elif event_type == "WIN_LOCKED":
         msg = (
-            f"🏆 <b>TRAILED PROFIT STOPPED OUT (WIN +1.5R)</b>\n"
+            f"🏆 <b>TRAILED PROFIT STOPPED OUT (WIN +1.62R Net)</b>\n"
             f"━━━━━━━━━━━━━━━━━━━━\n"
             f"🪙 #{sym} touched Trailing Stop at <code>${sig.get('trailing_sl_str', sig.get('tp1_str'))}</code> after securing TP2.\n"
-            f"💰 <b>Net Gain: +1.5 R Profit Secured!</b>\n"
+            f"💰 <b>Net Gain: +1.62 R Profit Secured!</b> (50% @ 1.5R + 25% @ 2.0R + 25% @ 1.5R)\n"
             f"Trade resolved successfully with locked gains."
         )
     elif event_type == "WIN_BE":
@@ -1856,8 +1856,8 @@ def check_and_resolve_open_trades(news_shield=None, btc_sentiment=None):
                             now_utc_ts = int(datetime.now(timezone.utc).timestamp() * 1000)
 
                             if s["status"] == "TP2_LOCKED_RUNNING":
-                                s["status"] = "WIN (TP2 Trailed / Locked +1.5R)"
-                                s["outcome_pnl"] = +1.5
+                                s["status"] = "WIN (TP2 Trailed / Locked +1.62R)"
+                                s["outcome_pnl"] = +1.62
                                 s["resolved_at"] = now_utc_str
                                 s["resolved_at_utc"] = now_utc_str
                                 s["resolved_ts"] = now_utc_ts
@@ -1885,11 +1885,11 @@ def check_and_resolve_open_trades(news_shield=None, btc_sentiment=None):
                             break
 
                     # Check Take Profit Stages:
-                    # Stage 3: Full TP3 Hit (1:3 Target)
+                    # Stage 3: Full TP3 Hit (1:3 Target) -> Weighted Net Return is +2.0R (50% @ 1.5R + 25% @ 2.0R + 25% @ 3.0R)
                     is_tp3_touched = (high >= s["tp"]) if is_long else (low <= s["tp"])
                     if is_tp3_touched:
-                        s["status"] = "WIN (1:3 TP3 Hit)"
-                        s["outcome_pnl"] = +3.0
+                        s["status"] = "WIN (1:3 TP3 Hit +2.0R)"
+                        s["outcome_pnl"] = +2.0
                         s["resolved_at"] = datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M')
                         s["resolved_at_utc"] = datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M')
                         s["resolved_ts"] = int(datetime.now(timezone.utc).timestamp() * 1000)
