@@ -145,12 +145,12 @@ def backtest_symbol_smc(symbol):
 
         # BUY SETUP:
         # Strict SMC: Bullish Trend + Liquidity Sweep + Active FVG/Demand + VSA Volume + Prime Session
-        if (curr_e20 > curr_e50) and (has_bull_sweep or is_bull_fvg) and (35 <= curr_rsi <= 65) and is_prime and (v_ratio >= 1.25):
+        if (curr_e20 > curr_e50) and (has_bull_sweep or is_bull_fvg) and (35 <= curr_rsi <= 65) and is_prime and (v_ratio >= 1.30):
             local_low = min(lows[max(0, i-3):i+1])
             entry = curr_p
-            sl = local_low - (1.0 * curr_atr)
+            sl = local_low - (2.8 * curr_atr)
             risk = entry - sl
-            if 0.008 <= (risk / entry) <= 0.055:
+            if 0.015 <= (risk / entry) <= 0.080:
                 tp1 = entry + (risk * 1.5)
                 tp2 = entry + (risk * 2.0)
                 tp3 = entry + (risk * 3.0)
@@ -172,12 +172,12 @@ def backtest_symbol_smc(symbol):
 
         # SELL SETUP:
         # Strict SMC: Bearish Trend + Liquidity Sweep + Active FVG/Supply + VSA Volume + Prime Session
-        elif (curr_e20 < curr_e50) and (has_bear_sweep or is_bear_fvg) and (35 <= curr_rsi <= 65) and is_prime and (v_ratio >= 1.25):
+        elif (curr_e20 < curr_e50) and (has_bear_sweep or is_bear_fvg) and (35 <= curr_rsi <= 65) and is_prime and (v_ratio >= 1.30):
             local_high = max(highs[max(0, i-3):i+1])
             entry = curr_p
-            sl = local_high + (1.0 * curr_atr)
+            sl = local_high + (2.8 * curr_atr)
             risk = sl - entry
-            if 0.010 <= (risk / entry) <= 0.065:
+            if 0.015 <= (risk / entry) <= 0.080:
                 tp1 = entry - (risk * 1.5)
                 tp2 = entry - (risk * 2.0)
                 tp3 = entry - (risk * 3.0)
@@ -252,12 +252,16 @@ def backtest_symbol_smc(symbol):
     return trades
 
 def run_institutional_backtest():
-    test_pairs = [
-        "BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT",
-        "DOGEUSDT", "ADAUSDT", "AVAXUSDT", "LINKUSDT", "SUIUSDT",
-        "NEARUSDT", "DOTUSDT", "APTUSDT", "FETUSDT", "RENDERUSDT",
-        "ARBUSDT", "OPUSDT", "INJUSDT", "TIAUSDT", "PEPEUSDT"
-    ]
+    try:
+        from binance_signal_scanner import get_top_pairs
+        test_pairs = get_top_pairs(150)
+    except Exception:
+        test_pairs = [
+            "BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT",
+            "DOGEUSDT", "ADAUSDT", "AVAXUSDT", "LINKUSDT", "SUIUSDT",
+            "NEARUSDT", "DOTUSDT", "APTUSDT", "FETUSDT", "RENDERUSDT",
+            "ARBUSDT", "OPUSDT", "INJUSDT", "TIAUSDT", "PEPEUSDT"
+        ]
 
     print("=" * 85)
     print(" 📊 BINANCE INSTITUTIONAL SMC 2.0 STRATEGY BACKTEST & EXECUTION REPORT")
