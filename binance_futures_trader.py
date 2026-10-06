@@ -285,7 +285,14 @@ class BinanceFuturesTrader:
                         mark_p = float(p.get("markPrice", 0.0))
                         unrealized_pnl = float(p.get("unRealizedProfit", 0.0))
                         lev = int(p.get("leverage", self.leverage))
-                        margin = float(p.get("isolatedMargin", 0.0)) or (abs(amt) * entry_p / lev if lev > 0 else 0.0)
+                        # In Binance Futures API:
+                        # - 'isolatedWallet' is the exact collateral deposited into the isolated position (matches Binance App "Margin" column).
+                        # - 'isolatedMargin' in positionRisk is isolatedWallet + unRealizedProfit (dynamic equity / liquidation margin).
+                        isolated_wallet = float(p.get("isolatedWallet", 0.0))
+                        if isolated_wallet > 0:
+                            margin = isolated_wallet
+                        else:
+                            margin = (abs(amt) * entry_p / lev) if lev > 0 else float(p.get("isolatedMargin", 0.0))
                         side = "BUY / LONG" if amt > 0 else "SELL / SHORT"
                         pnl_pct = ((mark_p - entry_p) / entry_p * 100 * lev) if (side == "BUY / LONG" and entry_p > 0) else (((entry_p - mark_p) / entry_p * 100 * lev) if entry_p > 0 else 0.0)
                         open_positions.append({
@@ -299,6 +306,8 @@ class BinanceFuturesTrader:
                             "leverage": lev,
                             "margin_type": p.get("marginType", "isolated").upper(),
                             "isolated_margin": round(margin, 2),
+                            "isolated_wallet": round(isolated_wallet, 2),
+                            "position_equity": round(float(p.get("isolatedMargin", 0.0)), 2),
                             "liquidation_price": float(p.get("liquidationPrice", 0.0))
                         })
                 return open_positions
