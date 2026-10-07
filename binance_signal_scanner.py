@@ -2156,6 +2156,8 @@ def record_new_signals_to_history(actionable_signals, history_data, open_symbols
                         send_telegram_new_signal(act)
                 else:
                     send_telegram_new_signal(act)
+            elif initial_status == "PENDING_LIMIT":
+                send_telegram_new_signal(act)
 
             existing_signals.append(new_item)
             existing_keys.add(key)
