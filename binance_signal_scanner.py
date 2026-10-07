@@ -1174,18 +1174,22 @@ def analyze_symbol(symbol, anchored_signal=None, btc_sentiment=None, session_inf
         # ---------------------------------------------------------------------
         # TIER 1: INSTITUTIONAL SMC (4H Trend + Daily Line S&R + 1H OB/FVG)
         # ---------------------------------------------------------------------
-        elif ema_bullish and mtf_4h["bias"] != "BEARISH" and (dist_to_support_pct <= 3.5 or is_sr_flip) and (38 <= rsi_daily <= 68):
+        elif ema_bullish and mtf_4h["bias"] == "BULLISH" and (dist_to_support_pct <= 3.5 or is_sr_flip) and (38 <= rsi_daily <= 68):
             has_supply_conflict = bear_ob_1h and (bear_ob_1h.get('is_testing') or (bear_ob_1h['bottom'] * 0.995 <= entry <= bear_ob_1h['top'] * 1.01))
             btc_blocks_long = btc_sentiment and not btc_sentiment.get("allow_longs", True) and symbol != "BTCUSDT"
+            sr_flip_lacks_confluence = is_sr_flip and not (sweep_1h["has_bull_sweep"] or bull_fvg_1h or bull_ob_1h)
 
-            if has_supply_conflict or btc_blocks_long:
+            if has_supply_conflict or btc_blocks_long or sr_flip_lacks_confluence:
                 signal_type = "WATCHLIST"
                 tier_badge = "WATCHLIST"
+                if sr_flip_lacks_confluence:
+                    trade_setup = "Breakout Blocked: Lacks Sweep/FVG Confluence"
+                    reasons.append("⚠️ Breakout Shield: S/R Flip breakout lacks Liquidity Sweep or FVG/OB confluence (No Sweep = No Entry rule)")
                 if has_supply_conflict:
                     trade_setup = f"Long Blocked: Inside 1H Supply OB"
                     reasons.append(f"⚠️ SMC Shield: Blocked Long into 1H Supply Zone")
                 if btc_blocks_long:
-                    reasons.append(f"⚠️ BTC Dump Shield: Bitcoin dumping ({btc_sentiment['reason']}), Long signals paused")
+                    reasons.append(f"⚠️ BTC Shield: BTC trend/momentum unfavorable ({btc_sentiment.get('reason', '') if btc_sentiment else ''}), Long signals paused")
             else:
                 signal_type = "BUY / LONG"
                 tier_badge = "⭐ TIER 1: INSTITUTIONAL SMC"
@@ -1216,18 +1220,22 @@ def analyze_symbol(symbol, anchored_signal=None, btc_sentiment=None, session_inf
                 if bull_ob_1h:
                     ob_info_str = f"Bullish 1H OB [${fmt_price(bull_ob_1h['bottom'])} - ${fmt_price(bull_ob_1h['top'])}]"
 
-        elif (not ema_bullish) and mtf_4h["bias"] != "BULLISH" and (dist_to_resistance_pct <= 3.5) and (32 <= rsi_daily <= 62):
+        elif (not ema_bullish) and mtf_4h["bias"] == "BEARISH" and (dist_to_resistance_pct <= 3.5 or is_sr_flip) and (32 <= rsi_daily <= 62):
             has_demand_conflict = bull_ob_1h and (bull_ob_1h.get('is_testing') or (bull_ob_1h['bottom'] * 0.99 <= entry <= bull_ob_1h['top'] * 1.005))
             btc_blocks_short = btc_sentiment and not btc_sentiment.get("allow_shorts", True) and symbol != "BTCUSDT"
+            sr_flip_lacks_confluence = is_sr_flip and not (sweep_1h["has_bear_sweep"] or bear_fvg_1h or bear_ob_1h)
 
-            if has_demand_conflict or btc_blocks_short:
+            if has_demand_conflict or btc_blocks_short or sr_flip_lacks_confluence:
                 signal_type = "WATCHLIST"
                 tier_badge = "WATCHLIST"
+                if sr_flip_lacks_confluence:
+                    trade_setup = "Breakout Blocked: Lacks Sweep/FVG Confluence"
+                    reasons.append("⚠️ Breakout Shield: S/R Flip breakout lacks Liquidity Sweep or FVG/OB confluence (No Sweep = No Entry rule)")
                 if has_demand_conflict:
                     trade_setup = f"Short Blocked: Inside 1H Demand OB"
                     reasons.append(f"⚠️ SMC Shield: Blocked Short into 1H Demand Zone")
                 if btc_blocks_short:
-                    reasons.append(f"⚠️ BTC Pump Shield: Bitcoin pumping ({btc_sentiment['reason']}), Short signals paused")
+                    reasons.append(f"⚠️ BTC Shield: BTC trend/momentum unfavorable ({btc_sentiment.get('reason', '') if btc_sentiment else ''}), Short signals paused")
             else:
                 signal_type = "SELL / SHORT"
                 tier_badge = "⭐ TIER 1: INSTITUTIONAL SMC"
@@ -2156,8 +2164,6 @@ def record_new_signals_to_history(actionable_signals, history_data, open_symbols
                         send_telegram_new_signal(act)
                 else:
                     send_telegram_new_signal(act)
-            elif initial_status == "PENDING_LIMIT":
-                send_telegram_new_signal(act)
 
             existing_signals.append(new_item)
             existing_keys.add(key)
@@ -2215,13 +2221,13 @@ def get_top_pairs(limit=None):
                 if sym.endswith('BUSDT') and sym not in real_b_cryptos:
                     continue
 
-                # Sniper Liquidity Filter: strictly require >= $25M (25,000,000 USDT) 24h quote volume
+                # Sniper Liquidity Filter: strictly require >= $35M (35,000,000 USDT) 24h quote volume
                 # Eliminates illiquid low-cap pairs prone to whale manipulation, spread slippage, and stop-hunts
                 try:
                     q_vol = float(t.get('quoteVolume', 0))
                 except Exception:
                     q_vol = 0.0
-                if q_vol < 25_000_000:
+                if q_vol < 35_000_000:
                     continue
 
                 usdt_pairs.append(t)
@@ -2270,8 +2276,14 @@ def get_btc_macro_sentiment():
     is_dumping = change_3h < -0.5 or (current_p < ema20 and rsi < 48)
     is_pumping = change_3h > 1.8 or (current_p > ema20 and rsi > 70)
     
-    allow_longs = not is_dumping
-    allow_shorts = not is_pumping
+    btc_bullish_trend = (current_p >= ema50) or (ema20 >= ema50)
+    btc_bearish_trend = (current_p <= ema50) or (ema20 <= ema50)
+    
+    # Strict BTC Trend Alignment Shield:
+    # Allow Altcoin Longs ONLY if BTC is not dumping AND BTC trend is not strictly bearish
+    # Allow Altcoin Shorts ONLY if BTC is not pumping AND BTC trend is not strictly bullish
+    allow_longs = (not is_dumping) and btc_bullish_trend
+    allow_shorts = (not is_pumping) and btc_bearish_trend
     
     status_label = "DUMPING / BEARISH 🔴" if is_dumping else ("PARABOLIC PUMP 🟢" if is_pumping else ("BULLISH 🟢" if ema20 > ema50 else "BEARISH 🔴"))
     
@@ -2284,7 +2296,7 @@ def get_btc_macro_sentiment():
         "btc_price": current_p,
         "change_3h": change_3h,
         "rsi_1h": rsi,
-        "reason": f"BTC 3h: {change_3h:+.2f}% | 1H RSI: {rsi:.1f} | 20 EMA: ${ema20:,.0f}"
+        "reason": f"BTC 3h: {change_3h:+.2f}% | 1H RSI: {rsi:.1f} | 20/50 EMA: ${ema20:,.0f}/${ema50:,.0f}"
     }
 
 NEWS_BUFFER_MINUTES = 45
