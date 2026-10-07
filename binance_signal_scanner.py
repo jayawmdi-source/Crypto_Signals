@@ -233,7 +233,7 @@ def send_telegram_new_signal(sig):
             f"🛑 <b>Dynamic Safe SL (ATR):</b> <code>${sig.get('stop_loss')}</code> (-{sig.get('risk_pct', '-')})\n"
             f"🏆 <b>TP 1 (1:1.5):</b> <code>${sig.get('tp_1', '-')}</code> (Book 50% + SL to True BE)\n"
             f"🏆 <b>TP 2 (1:2.0):</b> <code>${sig.get('tp_2', '-')}</code> (Book 25% + Lock +1.5R)\n"
-            f"🏆 <b>TP 3 (1:2.5):</b> <code>${sig.get('take_profit_1_3')}</code> (+{sig.get('reward_pct', '-')}) [Full Target]\n"
+            f"🏆 <b>TP 3 (1:3.0):</b> <code>${sig.get('take_profit_1_3')}</code> (+{sig.get('reward_pct', '-')}) [Full Target]\n"
         )
 
     reasons_bullets = "\n".join([f"• {r}" for r in sig.get("reasons", [])[:3]])
@@ -306,10 +306,10 @@ def send_telegram_resolution(sig, event_type):
     sym = sig.get('symbol') if sig else "PORTFOLIO"
     if event_type == "WIN_TP3":
         msg = (
-            f"🎉 <b>1:3 FULL TARGET HIT! (WIN +2.0R Net)</b> 🏆\n"
+            f"🎉 <b>1:3 FULL TARGET HIT! (WIN +3.0R)</b> 🏆\n"
             f"━━━━━━━━━━━━━━━━━━━━\n"
             f"🪙 #{sym} reached its <b>1:3 Full Take Profit</b> Target (<code>${sig.get('tp_str', sig.get('tp'))}</code>)!\n"
-            f"💰 <b>Net Realized Gain: +2.0 R Profit!</b> (Weighted: 50% @ 1.5R + 25% @ 2.0R + 25% @ 3.0R)\n"
+            f"💰 <b>Net Gain: +3.0 R Profit!</b>\n"
             f"✅ Trade completed with maximum institutional target."
         )
     elif event_type == "WIN_TP2":
@@ -331,10 +331,10 @@ def send_telegram_resolution(sig, event_type):
         )
     elif event_type == "WIN_LOCKED":
         msg = (
-            f"🏆 <b>TRAILED PROFIT STOPPED OUT (WIN +1.62R Net)</b>\n"
+            f"🏆 <b>TRAILED PROFIT STOPPED OUT (WIN +1.5R)</b>\n"
             f"━━━━━━━━━━━━━━━━━━━━\n"
             f"🪙 #{sym} touched Trailing Stop at <code>${sig.get('trailing_sl_str', sig.get('tp1_str'))}</code> after securing TP2.\n"
-            f"💰 <b>Net Gain: +1.62 R Profit Secured!</b> (50% @ 1.5R + 25% @ 2.0R + 25% @ 1.5R)\n"
+            f"💰 <b>Net Gain: +1.5 R Profit Secured!</b>\n"
             f"Trade resolved successfully with locked gains."
         )
     elif event_type == "WIN_BE":
@@ -798,13 +798,12 @@ def detect_5m_choch(klines_5m):
         "status": "5M Bullish CHoCH 🟢" if has_bullish_choch else ("5M Bearish CHoCH 🔴" if has_bearish_choch else "5M Range")
     }
 
-def verify_retest_confirmation(symbol, sig_type, l_entry, sl_price, btc_sentiment=None):
+def verify_retest_confirmation(symbol, sig_type, l_entry, sl_price):
     """
     SMC 2.0 Institutional Confirmation Engine for Retest Entries:
     1. Validates 4H Macro Trend alignment (Trend is your Friend rule).
-    2. Validates BTC Macro Alignment (Strict Correlation Guard).
-    3. Enforces Stop Loss Safety Barrier (ensures price didn't knife through SL).
-    4. Checks 15M/5M Candle Rejection or Micro-Structure CHoCH inside the zone.
+    2. Enforces Stop Loss Safety Barrier (ensures price didn't knife through SL).
+    3. Checks 15M/5M Candle Rejection or Micro-Structure CHoCH inside the zone.
     """
     is_long = "BUY" in str(sig_type).upper() or "LONG" in str(sig_type).upper()
     
@@ -815,19 +814,6 @@ def verify_retest_confirmation(symbol, sig_type, l_entry, sl_price, btc_sentimen
         return False, "4H Macro is BEARISH - counter-trend Longs blocked"
     if not is_long and "BULLISH" in macro_bias:
         return False, "4H Macro is BULLISH - counter-trend Shorts blocked"
-
-    # 1b. Strict BTC Macro Correlation Guard for Retest Executions
-    if symbol != "BTCUSDT":
-        if btc_sentiment is None:
-            try:
-                btc_sentiment = get_btc_macro_sentiment()
-            except Exception:
-                btc_sentiment = None
-        if btc_sentiment:
-            if is_long and (not btc_sentiment.get("allow_longs", True) or "BEARISH" in str(btc_sentiment.get("status", "")) or btc_sentiment.get("is_dumping")):
-                return False, f"BTC Macro Shield: Bitcoin is Bearish/Dumping ({btc_sentiment.get('reason')}) - counter-trend Long retest blocked"
-            if not is_long and (not btc_sentiment.get("allow_shorts", True) or "BULLISH" in str(btc_sentiment.get("status", "")) or btc_sentiment.get("is_pumping")):
-                return False, f"BTC Pump Shield: Bitcoin is Bullish/Pumping ({btc_sentiment.get('reason')}) - counter-trend Short retest blocked"
 
     # 2. Fetch Lower Timeframe Klines (15M & 5M)
     klines_15m = get_klines(symbol, interval="15m", limit=15)
@@ -1301,13 +1287,13 @@ def analyze_symbol(symbol, anchored_signal=None, btc_sentiment=None, session_inf
                 reasons.append(f"💤 Prime Session Guard: Entry held for London/NY Open (Low Off-Hours Volatility)")
 
             # 2. Strict BTC Macro Correlation Guard
-            if btc_sentiment and symbol != "BTCUSDT":
+            if btc_sentiment:
                 is_long_sig = "BUY" in signal_type or "LONG" in signal_type
-                if is_long_sig and (not btc_sentiment.get("allow_longs", True) or btc_sentiment.get("is_dumping") or "BEARISH" in str(btc_sentiment.get("status", ""))):
+                if is_long_sig and (btc_sentiment.get("is_dumping") or "BEARISH" in str(btc_sentiment.get("status", ""))):
                     signal_type = "WATCHLIST"
                     tier_badge = "🛡️ BTC DUMP WATCHLIST"
                     reasons.append(f"⚠️ BTC Macro Shield: Bitcoin is Bearish/Dumping ({btc_sentiment.get('reason')}). Long held in Watchlist.")
-                elif not is_long_sig and (not btc_sentiment.get("allow_shorts", True) or btc_sentiment.get("is_pumping") or "BULLISH" in str(btc_sentiment.get("status", ""))):
+                elif not is_long_sig and (btc_sentiment.get("is_pumping") or "BULLISH" in str(btc_sentiment.get("status", ""))):
                     signal_type = "WATCHLIST"
                     tier_badge = "🛡️ BTC PUMP WATCHLIST"
                     reasons.append(f"⚠️ BTC Pump Shield: Bitcoin is Bullish/Pumping ({btc_sentiment.get('reason')}). Short held in Watchlist.")
@@ -1465,9 +1451,6 @@ def analyze_symbol(symbol, anchored_signal=None, btc_sentiment=None, session_inf
         "mtf_status": mtf_4h["bias"],
         "fvg_str": fvg_str,
         "sweep_str": sweep_str,
-        "has_bull_sweep": bool(sweep_1h.get("has_bull_sweep", False)),
-        "has_bear_sweep": bool(sweep_1h.get("has_bear_sweep", False)),
-        "sweep_type": "SELL_SIDE" if sweep_1h.get("has_bull_sweep") else ("BUY_SIDE" if sweep_1h.get("has_bear_sweep") else "NONE"),
         "choch_badge": choch_badge,
         "order_block_1h": ob_info_str,
         "rsi_daily": round(rsi_daily, 1),
@@ -1493,7 +1476,7 @@ def analyze_symbol(symbol, anchored_signal=None, btc_sentiment=None, session_inf
         "raw_tp": tp,
         "risk_pct": f"{risk_pct:.2f}%" if risk_pct > 0 else "-",
         "reward_pct": f"{reward_pct:.2f}%" if reward_pct > 0 else "-",
-        "rr_ratio": "1:2.5" if signal_type != "WATCHLIST" else "-",
+        "rr_ratio": "1:3" if signal_type != "WATCHLIST" else "-",
         "limit_setup": limit_setup,
         "action_status": action_status,
         "action_label": action_label,
@@ -1502,19 +1485,13 @@ def analyze_symbol(symbol, anchored_signal=None, btc_sentiment=None, session_inf
         "reasons": reasons
     }
 
-def check_and_resolve_open_trades(news_shield=None, btc_sentiment=None):
+def check_and_resolve_open_trades(news_shield=None):
     if news_shield is None:
         try:
             upcoming_news = get_upcoming_economic_news()
             news_shield = evaluate_news_shield(upcoming_news)
         except Exception:
             news_shield = {"is_shield_active": False}
-
-    if btc_sentiment is None:
-        try:
-            btc_sentiment = get_btc_macro_sentiment()
-        except Exception:
-            btc_sentiment = {"status": "NEUTRAL ⚪", "allow_longs": True, "allow_shorts": True}
 
     history_data = {
         "total_signals": 0,
@@ -1658,44 +1635,36 @@ def check_and_resolve_open_trades(news_shield=None, btc_sentiment=None):
             # -----------------------------------------------------------------
             # 0. GROUND TRUTH: Sync all OPEN signals against Binance Futures live positions
             # -----------------------------------------------------------------
-            if pos_sync_success and s.get("executed_live") and auto_trader and auto_trader.is_live_enabled() and curr_status in ["OPEN", "TP1_BE_RUNNING", "TP2_LOCKED_RUNNING"]:
+            if pos_sync_success and auto_trader and auto_trader.is_live_enabled() and curr_status in ["OPEN", "TP1_BE_RUNNING", "TP2_LOCKED_RUNNING"]:
                 if sym not in active_rp_syms:
                     # Position closed or not open on Binance Futures matching engine!
                     user_trades = auto_trader.get_user_trades(sym, limit=10)
-                    entry_ref = (s.get("live_entry_ts", 0) or s.get("fill_ts", 0) or s.get("timestamp", 0)) - 60000
-                    is_long_sig = "BUY" in str(s.get("type", "")).upper() or "LONG" in str(s.get("type", "")).upper()
-                    exit_side = "SELL" if is_long_sig else "BUY"
+                    realized_pnl = 0.0
+                    if user_trades:
+                        entry_ref = s.get("live_entry_ts", 0) - 60000
+                        recent_ut = [tr for tr in user_trades if int(tr.get("time", 0)) >= entry_ref] or user_trades
+                        realized_pnl = sum(float(tr.get("realizedPnl", 0.0)) - float(tr.get("commission", 0.0)) for tr in recent_ut)
 
-                    exit_trades = [
-                        tr for tr in user_trades
-                        if int(tr.get("time", 0)) >= entry_ref
-                        and (tr.get("side", "").upper() == exit_side or float(tr.get("realizedPnl", 0.0)) != 0)
-                    ] if user_trades else []
+                    s["realized_pnl_usdt"] = round(realized_pnl, 2)
+                    now_utc_str = datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M')
+                    s["resolved_at"] = now_utc_str
+                    s["resolved_at_utc"] = now_utc_str
+                    s["resolved_ts"] = int(datetime.now(timezone.utc).timestamp() * 1000)
 
-                    if not exit_trades:
-                        print(f"[*] Live sync: {sym} not in active positions, but no exit trades confirmed yet. Keeping position active.")
+                    if realized_pnl > 0:
+                        s["status"] = f"WIN (+${realized_pnl:.2f} USDT)"
+                        s["outcome_pnl"] = round(realized_pnl / float(s.get("executed_margin", 2.5) or 2.5), 2)
+                    elif realized_pnl < 0:
+                        s["status"] = "LOSS (SL Hit)"
+                        s["outcome_pnl"] = -1.0
                     else:
-                        realized_pnl = sum(float(tr.get("realizedPnl", 0.0)) - float(tr.get("commission", 0.0)) for tr in exit_trades)
-                        s["realized_pnl_usdt"] = round(realized_pnl, 2)
-                        now_utc_str = datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M')
-                        s["resolved_at"] = now_utc_str
-                        s["resolved_at_utc"] = now_utc_str
-                        s["resolved_ts"] = max(int(tr.get("time", 0)) for tr in exit_trades)
+                        s["status"] = "CLOSED (Break-Even)"
+                        s["outcome_pnl"] = 0.0
 
-                        if realized_pnl < -0.05:
-                            s["status"] = "LOSS (SL Hit)"
-                            s["outcome_pnl"] = -1.0
-                        elif realized_pnl > 0.05:
-                            s["status"] = f"WIN (+${realized_pnl:.2f} USDT)"
-                            s["outcome_pnl"] = round(realized_pnl / float(s.get("executed_margin", 2.5) or 2.5), 2)
-                        else:
-                            s["status"] = "CLOSED (Break-Even)"
-                            s["outcome_pnl"] = 0.0
-
-                        if s.get("executed_live") and not s.get("notified_live_close"):
-                            s["notified_live_close"] = True
-                            send_telegram_live_close(sym, realized_pnl, s["status"], s.get("outcome_pnl", 0.0))
-                        continue
+                    if s.get("executed_live") and not s.get("notified_live_close"):
+                        s["notified_live_close"] = True
+                        send_telegram_live_close(sym, realized_pnl, s["status"], s.get("outcome_pnl", 0.0))
+                    continue
 
             sig_ts = s.get("timestamp", 0)
             kl = get_klines(s["symbol"], interval="1h", limit=60)
@@ -1777,7 +1746,7 @@ def check_and_resolve_open_trades(news_shield=None, btc_sentiment=None):
                             elif existing_pos:
                                 print(f"[!] Retest execution skipped for {sym}: Position already exists on Binance.")
                             else:
-                                is_confirmed, conf_reason = verify_retest_confirmation(sym, s["type"], l_entry, s["sl"], btc_sentiment=btc_sentiment)
+                                is_confirmed, conf_reason = verify_retest_confirmation(sym, s["type"], l_entry, s["sl"])
                                 if is_confirmed:
                                     act_payload = {
                                         "symbol": sym,
@@ -1827,7 +1796,9 @@ def check_and_resolve_open_trades(news_shield=None, btc_sentiment=None):
             # 2. ACTIVE TRADES: Multi-Stage Trailing Break-Even & Safe Execution
             # -----------------------------------------------------------------
             if s["status"] in ["OPEN", "TP1_BE_RUNNING", "TP2_LOCKED_RUNNING"]:
-                is_live_active = bool(pos_sync_success and s.get("executed_live") and (sym in active_rp_syms))
+                if pos_sync_success and (s.get("symbol") in active_rp_syms):
+                    s["executed_live"] = True
+                    continue
                 ref_ts = s.get("fill_ts") or s.get("live_entry_ts") or sig_ts
                 future_bars = [bar for bar in kl if (bar[0] + 3600000) >= ref_ts]
                 for bar in future_bars:
@@ -1837,59 +1808,51 @@ def check_and_resolve_open_trades(news_shield=None, btc_sentiment=None):
                     current_sl = s.get("trailing_sl", s["sl"])
 
                     # CONSERVATIVE SEQUENCING: Prioritize Stop Loss over Take Profit
-                    # If intra-candle flash wick touches SL:
+                    # If intra-candle flash wick touches SL, execute SL exit first!
                     is_sl_touched = (low <= current_sl) if is_long else (high >= current_sl)
                     
                     if is_sl_touched:
-                        if is_live_active:
-                            # For active live positions on Binance, hardware STOP_MARKET governs physical execution.
-                            # Only execute emergency market close if candle close has truly broken beyond SL.
-                            curr_bar_close = float(bar[4])
-                            truly_breached = (curr_bar_close <= current_sl) if is_long else (curr_bar_close >= current_sl)
-                            if truly_breached:
-                                if auto_trader and auto_trader.is_live_enabled():
-                                    auto_trader.close_position_market(s["symbol"], is_long, fraction=1.0)
-                                break
-                            # If not truly breached on close (minor wick while position healthy), continue checking TP
-                        else:
-                            now_utc_str = datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M')
-                            now_utc_ts = int(datetime.now(timezone.utc).timestamp() * 1000)
+                        if auto_trader and auto_trader.is_live_enabled():
+                            auto_trader.close_position_market(s["symbol"], is_long, fraction=1.0)
 
-                            if s["status"] == "TP2_LOCKED_RUNNING":
-                                s["status"] = "WIN (TP2 Trailed / Locked +1.62R)"
-                                s["outcome_pnl"] = +1.62
-                                s["resolved_at"] = now_utc_str
-                                s["resolved_at_utc"] = now_utc_str
-                                s["resolved_ts"] = now_utc_ts
-                                if not s.get("notified_loss"):
-                                    s["notified_loss"] = True
-                                    send_telegram_resolution(s, "WIN_LOCKED")
-                            elif s["status"] == "TP1_BE_RUNNING":
-                                s["status"] = "WIN (TP1 Hit / Break-Even Exit)"
-                                s["outcome_pnl"] = +0.75
-                                s["resolved_at"] = now_utc_str
-                                s["resolved_at_utc"] = now_utc_str
-                                s["resolved_ts"] = now_utc_ts
-                                if not s.get("notified_loss"):
-                                    s["notified_loss"] = True
-                                    send_telegram_resolution(s, "WIN_BE")
-                            else:
-                                s["status"] = "LOSS (SL Hit)"
-                                s["outcome_pnl"] = -1.0
-                                s["resolved_at"] = now_utc_str
-                                s["resolved_at_utc"] = now_utc_str
-                                s["resolved_ts"] = now_utc_ts
-                                if not s.get("notified_loss"):
-                                    s["notified_loss"] = True
-                                    send_telegram_resolution(s, "LOSS_SL")
-                            break
+                        now_utc_str = datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M')
+                        now_utc_ts = int(datetime.now(timezone.utc).timestamp() * 1000)
+
+                        if s["status"] == "TP2_LOCKED_RUNNING":
+                            s["status"] = "WIN (TP2 Trailed / Locked +1.5R)"
+                            s["outcome_pnl"] = +1.5
+                            s["resolved_at"] = now_utc_str
+                            s["resolved_at_utc"] = now_utc_str
+                            s["resolved_ts"] = now_utc_ts
+                            if not s.get("notified_loss"):
+                                s["notified_loss"] = True
+                                send_telegram_resolution(s, "WIN_LOCKED")
+                        elif s["status"] == "TP1_BE_RUNNING":
+                            s["status"] = "WIN (TP1 Hit / Break-Even Exit)"
+                            s["outcome_pnl"] = +0.75
+                            s["resolved_at"] = now_utc_str
+                            s["resolved_at_utc"] = now_utc_str
+                            s["resolved_ts"] = now_utc_ts
+                            if not s.get("notified_loss"):
+                                s["notified_loss"] = True
+                                send_telegram_resolution(s, "WIN_BE")
+                        else:
+                            s["status"] = "LOSS (SL Hit)"
+                            s["outcome_pnl"] = -1.0
+                            s["resolved_at"] = now_utc_str
+                            s["resolved_at_utc"] = now_utc_str
+                            s["resolved_ts"] = now_utc_ts
+                            if not s.get("notified_loss"):
+                                s["notified_loss"] = True
+                                send_telegram_resolution(s, "LOSS_SL")
+                        break
 
                     # Check Take Profit Stages:
-                    # Stage 3: Full TP3 Hit (1:3 Target) -> Weighted Net Return is +2.0R (50% @ 1.5R + 25% @ 2.0R + 25% @ 3.0R)
+                    # Stage 3: Full TP3 Hit (1:3 Target)
                     is_tp3_touched = (high >= s["tp"]) if is_long else (low <= s["tp"])
                     if is_tp3_touched:
-                        s["status"] = "WIN (1:3 TP3 Hit +2.0R)"
-                        s["outcome_pnl"] = +2.0
+                        s["status"] = "WIN (1:3 TP3 Hit)"
+                        s["outcome_pnl"] = +3.0
                         s["resolved_at"] = datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M')
                         s["resolved_at_utc"] = datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M')
                         s["resolved_ts"] = int(datetime.now(timezone.utc).timestamp() * 1000)
@@ -1934,31 +1897,72 @@ def check_and_resolve_open_trades(news_shield=None, btc_sentiment=None):
 
     # Ensure physical Stop Loss & TP protection on Binance for all active positions
     if auto_trader and auto_trader.is_live_enabled():
-        # Ensure hardware SL/TP protection is in place on Binance
         try:
             real_positions = auto_trader.get_open_positions_detail()
-            if real_positions:
-                for rp in real_positions:
-                    rp_sym = rp.get("symbol")
-                    rp_amt = float(rp.get("position_amt", 0.0))
-                    if rp_amt == 0:
-                        continue
-                    rp_is_long = "BUY" in rp.get("side", "") or "LONG" in rp.get("side", "")
-                    matching = [s for s in existing_signals if s.get("symbol") == rp_sym and s.get("status") in ["OPEN", "TP1_BE_RUNNING", "TP2_LOCKED_RUNNING"]]
-                    if matching:
-                        m_sig = matching[0]
-                        m_sl = m_sig.get("trailing_sl") or m_sig.get("sl", 0)
-                        m_tp = m_sig.get("tp", 0)
-                        auto_trader.ensure_position_protection(rp_sym, rp_is_long, m_sl, m_tp, abs(rp_amt))
-                    else:
-                        entry_p = float(rp.get("entry_price", 0.0))
-                        if entry_p > 0:
-                            safe_sl = entry_p * 0.96 if rp_is_long else entry_p * 1.04
-                            risk = abs(safe_sl - entry_p)
-                            safe_tp = entry_p + (risk * 3.0) if rp_is_long else entry_p - (risk * 3.0)
-                            auto_trader.ensure_position_protection(rp_sym, rp_is_long, safe_sl, safe_tp, abs(rp_amt))
+            for rp in real_positions:
+                rp_sym = rp.get("symbol")
+                rp_amt = float(rp.get("position_amt", 0.0))
+                if rp_amt == 0:
+                    continue
+                rp_is_long = "BUY" in rp.get("side", "") or "LONG" in rp.get("side", "")
+                matching = [s for s in existing_signals if s.get("symbol") == rp_sym and s.get("status") in ["OPEN", "TP1_BE_RUNNING", "TP2_LOCKED_RUNNING"]]
+                if matching:
+                    m_sig = matching[0]
+                    m_sl = m_sig.get("trailing_sl") or m_sig.get("sl", 0)
+                    m_tp = m_sig.get("tp", 0)
+                    auto_trader.ensure_position_protection(rp_sym, rp_is_long, m_sl, m_tp, abs(rp_amt))
+                else:
+                    entry_p = float(rp.get("entry_price", 0.0))
+                    if entry_p > 0:
+                        safe_sl = entry_p * 0.96 if rp_is_long else entry_p * 1.04
+                        risk = abs(safe_sl - entry_p)
+                        safe_tp = entry_p + (risk * 3.0) if rp_is_long else entry_p - (risk * 3.0)
+                        auto_trader.ensure_position_protection(rp_sym, rp_is_long, safe_sl, safe_tp, abs(rp_amt))
         except Exception as e_prot:
             print(f"[!] Protection auto-shield sync error: {e_prot}")
+
+        # Sync live positions that closed on Binance matching engine & send Telegram Live Close Alerts
+        try:
+            if real_positions is not None:
+                active_rp_syms = {rp.get("symbol") for rp in real_positions if float(rp.get("position_amt", 0.0)) != 0}
+                for s in existing_signals:
+                    if s.get("executed_live") and s.get("status") in ["OPEN", "TP1_BE_RUNNING", "TP2_LOCKED_RUNNING"]:
+                        sym = s.get("symbol")
+                        if sym not in active_rp_syms:
+                            # Position closed on Binance Futures! Fetch exact trade fills & realized PnL
+                            user_trades = auto_trader.get_user_trades(sym, limit=10)
+                            realized_pnl = 0.0
+                            if user_trades:
+                                realized_pnl = sum(float(tr.get("realizedPnl", 0.0)) - float(tr.get("commission", 0.0)) for tr in user_trades)
+                            
+                            s["realized_pnl_usdt"] = round(realized_pnl, 2)
+                            now_utc_str = datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M')
+                            s["resolved_at"] = now_utc_str
+                            s["resolved_at_utc"] = now_utc_str
+                            s["resolved_ts"] = int(datetime.now(timezone.utc).timestamp() * 1000)
+
+                            margin_val = float(s.get("executed_margin") or 2.5)
+                            entry_p = float(s.get("entry") or s.get("raw_price") or 0.0)
+                            sl_p = float(s.get("sl") or s.get("raw_limit_sl") or 0.0)
+                            risk_pct = abs(entry_p - sl_p) / entry_p if (entry_p > 0 and sl_p > 0) else 0.025
+                            risk_usdt = margin_val * 10.0 * risk_pct if risk_pct > 0 else (margin_val * 0.25)
+
+                            if realized_pnl > 0:
+                                calc_r = round(realized_pnl / risk_usdt, 2) if risk_usdt > 0 else round(realized_pnl / margin_val, 2)
+                                s["status"] = f"WIN (+${realized_pnl:.2f} USDT)"
+                                s["outcome_pnl"] = calc_r
+                            elif realized_pnl < 0:
+                                s["status"] = "LOSS (SL Hit)"
+                                s["outcome_pnl"] = -1.0
+                            else:
+                                s["status"] = "CLOSED (Break-Even)"
+                                s["outcome_pnl"] = 0.0
+
+                            if s.get("executed_live") and not s.get("notified_live_close"):
+                                s["notified_live_close"] = True
+                                send_telegram_live_close(sym, realized_pnl, s["status"], s.get("outcome_pnl", 0.0))
+        except Exception as e_close_sync:
+            print(f"[!] Live closed position sync error: {e_close_sync}")
 
     recalculate_history_stats(history_data)
     with open(HISTORY_FILE, "w", encoding="utf-8") as f:
@@ -1981,7 +1985,6 @@ def recalculate_history_stats(history_data):
     pending = len([s for s in target_signals if s.get("status") in active_statuses])
     total_closed = len(closed)
     win_rate = (wins / total_closed * 100) if total_closed > 0 else 0.0
-    net_r = round(sum(s.get("outcome_pnl", 0.0) for s in closed), 1)
 
     # Calculate Realized Net PnL in USDT against starting capital ($100.00) or from Binance API balance
     realized_usdt = 0.0
@@ -2015,6 +2018,11 @@ def recalculate_history_stats(history_data):
             (s.get("outcome_pnl", 0.0) * float(s.get("executed_margin", 1.0) or 1.0))
             for s in closed
         ), 2)
+
+    STANDARD_RISK_DOLLARS = 0.85
+    net_r = round(sum(float(s.get("outcome_pnl") if s.get("outcome_pnl") is not None else 0.0) for s in closed), 1)
+    if realized_usdt != 0.0:
+        net_r = round(realized_usdt / STANDARD_RISK_DOLLARS, 1)
 
     history_data.update({
         "updated_at": datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
@@ -2098,9 +2106,6 @@ def record_new_signals_to_history(actionable_signals, history_data, open_symbols
                 "session": act.get("session_name", "Global"),
                 "fvg": act.get("fvg_str", "None"),
                 "sweep": act.get("sweep_str", "None"),
-                "has_bull_sweep": act.get("has_bull_sweep", False),
-                "has_bear_sweep": act.get("has_bear_sweep", False),
-                "sweep_type": act.get("sweep_type", "NONE"),
                 "date": today_str,
                 "timestamp": current_ts,
                 "entry": act["raw_entry"],
@@ -2122,31 +2127,8 @@ def record_new_signals_to_history(actionable_signals, history_data, open_symbols
                 "outcome_pnl": 0.0
             }
             if initial_status == "OPEN":
-                # Multi-Timeframe Alignment & Directional Counter-Trend Sweep Protection:
-                sig_type_str = str(act.get("signal", "")).upper()
-                macro_bias_str = str(act.get("mtf_status", "")).upper()
-                is_long_act = "BUY" in sig_type_str or "LONG" in sig_type_str
-                sweep_txt = str(act.get("sweep") or act.get("sweep_str") or "").lower()
-
-                has_sell_side_sweep = bool(act.get("has_bull_sweep")) or ("sell-side" in sweep_txt or "sell side" in sweep_txt or "sell_side" in sweep_txt)
-                has_buy_side_sweep = bool(act.get("has_bear_sweep")) or ("buy-side" in sweep_txt or "buy side" in sweep_txt or "buy_side" in sweep_txt)
-
-                # BTC Macro Sentiment Guard for live market execution:
-                if sym != "BTCUSDT" and btc_sentiment:
-                    if is_long_act and (not btc_sentiment.get("allow_longs", True) or "BEARISH" in str(btc_sentiment.get("status", "")) or btc_sentiment.get("is_dumping")):
-                        print(f"[!] Safety Shield: Blocked naked counter-trend LONG for {sym} - BTC is Bearish/Dumping ({btc_sentiment.get('reason')}).")
-                        continue
-                    if not is_long_act and (not btc_sentiment.get("allow_shorts", True) or "BULLISH" in str(btc_sentiment.get("status", "")) or btc_sentiment.get("is_pumping")):
-                        print(f"[!] Safety Shield: Blocked naked counter-trend SHORT for {sym} - BTC is Bullish/Pumping ({btc_sentiment.get('reason')}).")
-                        continue
-
-                if is_long_act and "BEARISH" in macro_bias_str and not has_sell_side_sweep:
-                    print(f"[!] Safety Shield: Blocked naked counter-trend LONG for {sym} (Signal={sig_type_str}, 4H Macro={macro_bias_str}) - Missing verified Sell-Side Liquidity Sweep.")
-                    continue
-
-                if not is_long_act and "BULLISH" in macro_bias_str and not has_buy_side_sweep:
-                    print(f"[!] Safety Shield: Blocked naked counter-trend SHORT for {sym} (Signal={sig_type_str}, 4H Macro={macro_bias_str}) - Missing verified Buy-Side Liquidity Sweep.")
-                    continue
+                # Dynamic Multi-Timeframe Alignment: Allow 1H structural setups in both directions
+                pass
 
                 if auto_trader and auto_trader.is_live_enabled():
                     cb = history_data.get("circuit_breaker", {})
@@ -2283,29 +2265,13 @@ def get_btc_macro_sentiment():
     
     change_3h = ((current_p - closes[-4]) / closes[-4]) * 100 if len(closes) >= 4 else 0.0
     
-    # 4H Macro Bias for BTC
-    macro_4h = get_4h_macro_bias("BTCUSDT")
-    macro_4h_bias = macro_4h.get("bias", "NEUTRAL") if macro_4h else "NEUTRAL"
-    
     is_dumping = change_3h < -0.5 or (current_p < ema20 and rsi < 48)
     is_pumping = change_3h > 1.8 or (current_p > ema20 and rsi > 70)
     
-    is_bearish = is_dumping or (macro_4h_bias == "BEARISH") or (ema20 < ema50 and current_p < ema20)
-    is_bullish = is_pumping or (macro_4h_bias == "BULLISH" and ema20 > ema50 and current_p > ema20)
+    allow_longs = not is_dumping
+    allow_shorts = not is_pumping
     
-    if is_dumping:
-        status_label = "DUMPING / BEARISH 🔴"
-    elif is_pumping:
-        status_label = "PARABOLIC PUMP 🟢"
-    elif is_bearish or (ema20 <= ema50):
-        status_label = "BEARISH 🔴"
-    elif is_bullish or (ema20 > ema50):
-        status_label = "BULLISH 🟢"
-    else:
-        status_label = "NEUTRAL ⚪"
-
-    allow_longs = not (is_dumping or "BEARISH" in status_label or is_bearish)
-    allow_shorts = not (is_pumping or "BULLISH" in status_label or is_bullish)
+    status_label = "DUMPING / BEARISH 🔴" if is_dumping else ("PARABOLIC PUMP 🟢" if is_pumping else ("BULLISH 🟢" if ema20 > ema50 else "BEARISH 🔴"))
     
     return {
         "status": status_label,
@@ -2316,8 +2282,7 @@ def get_btc_macro_sentiment():
         "btc_price": current_p,
         "change_3h": change_3h,
         "rsi_1h": rsi,
-        "macro_4h": macro_4h_bias,
-        "reason": f"BTC 3h: {change_3h:+.2f}% | 1H RSI: {rsi:.1f} | 1H 20 EMA: ${ema20:,.0f} | 4H: {macro_4h_bias}"
+        "reason": f"BTC 3h: {change_3h:+.2f}% | 1H RSI: {rsi:.1f} | 20 EMA: ${ema20:,.0f}"
     }
 
 NEWS_BUFFER_MINUTES = 45
@@ -2418,14 +2383,14 @@ def scan_all_pairs():
     upcoming_news = get_upcoming_economic_news()
     news_shield = evaluate_news_shield(upcoming_news)
 
-    # 2. Check BTC Macro Market Sentiment
-    btc_sentiment = get_btc_macro_sentiment()
-
-    # 3. Resolve open trades against latest candles, handle trailing stops & protect retests
-    history_data = check_and_resolve_open_trades(news_shield=news_shield, btc_sentiment=btc_sentiment)
+    # 2. Resolve open trades against latest candles & handle trailing stops
+    history_data = check_and_resolve_open_trades(news_shield=news_shield)
     active_statuses = ["OPEN", "TP1_BE_RUNNING", "TP2_LOCKED_RUNNING"]
     open_signals_map = {s["symbol"]: s for s in history_data.get("signals", []) if s.get("status") in active_statuses}
     open_symbols_before_scan = set(open_signals_map.keys())
+
+    # 3. Check BTC Macro Market Sentiment
+    btc_sentiment = get_btc_macro_sentiment()
     circuit_breaker = history_data.get("circuit_breaker", {})
 
     # 4. Get Top liquid pairs (Configurable via SCAN_PAIRS_LIMIT, default 100)
@@ -3031,7 +2996,7 @@ def generate_html_dashboard(data, output_path):
                 <div class="stat-card">
                     <div class="stat-title"><i class="fa-solid fa-trophy text-warning me-1"></i> Real Live Win Rate</div>
                     <div class="stat-value val-yellow" id="stat-win-rate">{win_rate}%</div>
-                    <small class="text-muted" id="stat-win-rate-sub">Binance Executed ({wins}W / {losses}L)</small>
+                    <small class="text-muted">Binance Executed ({wins}W / {losses}L)</small>
                 </div>
             </div>
             <div class="col-12 col-md-3">
@@ -3399,10 +3364,6 @@ def generate_html_dashboard(data, output_path):
                 if (winRateEl && hist.win_rate_pct !== undefined) {{
                     winRateEl.innerText = `${{hist.win_rate_pct.toFixed(1)}}%`;
                 }}
-                const winRateSubEl = document.getElementById('stat-win-rate-sub');
-                if (winRateSubEl && hist.wins !== undefined && hist.losses !== undefined) {{
-                    winRateSubEl.innerText = `Binance Executed (${{hist.wins}}W / ${{hist.losses}}L)`;
-                }}
                 const winsEl = document.getElementById('stat-wins');
                 if (winsEl && hist.wins !== undefined) {{
                     winsEl.innerText = hist.wins;
@@ -3492,7 +3453,7 @@ def generate_html_dashboard(data, output_path):
                                 </div>
                                 <div class="d-flex justify-content-between py-1 border-bottom border-secondary border-opacity-10" style="font-size: 0.74rem;">
                                     <span class="pos-label text-muted">Isolated Margin:</span>
-                                    <span class="text-warning fw-semibold">$${{p.isolated_margin.toFixed(2)}} USDT <small class="text-muted">($${{p.position_amt}} $${{p.symbol.replace('USDT', '')}})</small></span>
+                                    <span class="text-warning fw-semibold">$${{p.isolated_margin.toFixed(2)}} USDT (${{p.position_amt}})</span>
                                 </div>
                                 <div class="d-flex justify-content-between py-1 border-bottom border-secondary border-opacity-10" style="font-size: 0.74rem;">
                                     <span class="pos-label text-muted">Unrealized PnL:</span>
