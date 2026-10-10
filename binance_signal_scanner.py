@@ -1938,9 +1938,10 @@ def check_and_resolve_open_trades(news_shield=None):
             # 2. ACTIVE TRADES: Multi-Stage Trailing Break-Even & Safe Execution
             # -----------------------------------------------------------------
             if s["status"] in ["OPEN", "TP1_BE_RUNNING", "TP2_LOCKED_RUNNING"]:
-                if pos_sync_success and (s.get("symbol") in active_rp_syms):
+                is_live_active = pos_sync_success and (s.get("symbol") in active_rp_syms)
+                if is_live_active:
                     s["executed_live"] = True
-                    continue
+
                 ref_ts = s.get("fill_ts") or s.get("live_entry_ts") or sig_ts
                 future_bars = [bar for bar in kl if (bar[0] + 3600000) >= ref_ts]
                 for bar in future_bars:
@@ -1950,44 +1951,29 @@ def check_and_resolve_open_trades(news_shield=None):
                     current_sl = s.get("trailing_sl", s["sl"])
 
                     # CONSERVATIVE SEQUENCING: Prioritize Stop Loss over Take Profit
-                    # If intra-candle flash wick touches SL, execute SL exit first!
-                    is_sl_touched = (low <= current_sl) if is_long else (high >= current_sl)
-                    
-                    if is_sl_touched:
-                        if auto_trader and auto_trader.is_live_enabled():
-                            auto_trader.close_position_market(s["symbol"], is_long, fraction=1.0)
+                    # (For live Binance trades, physical exchange-level STOP_MARKET orders protect the position)
+                    if not is_live_active:
+                        is_sl_touched = (low <= current_sl) if is_long else (high >= current_sl)
+                        if is_sl_touched:
+                            now_utc_str = datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M')
+                            now_utc_ts = int(datetime.now(timezone.utc).timestamp() * 1000)
 
-                        now_utc_str = datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M')
-                        now_utc_ts = int(datetime.now(timezone.utc).timestamp() * 1000)
-
-                        if s["status"] == "TP2_LOCKED_RUNNING":
-                            s["status"] = "WIN (TP2 Trailed / Locked +1.5R)"
-                            s["outcome_pnl"] = +1.5
-                            s["resolved_at"] = now_utc_str
-                            s["resolved_at_utc"] = now_utc_str
-                            s["resolved_ts"] = now_utc_ts
-                            if not s.get("notified_loss"):
-                                s["notified_loss"] = True
-                                send_telegram_resolution(s, "WIN_LOCKED")
-                        elif s["status"] == "TP1_BE_RUNNING":
-                            s["status"] = "WIN (TP1 Hit / Break-Even Exit)"
-                            s["outcome_pnl"] = +0.75
-                            s["resolved_at"] = now_utc_str
-                            s["resolved_at_utc"] = now_utc_str
-                            s["resolved_ts"] = now_utc_ts
-                            if not s.get("notified_loss"):
-                                s["notified_loss"] = True
-                                send_telegram_resolution(s, "WIN_BE")
-                        else:
-                            s["status"] = "LOSS (SL Hit)"
-                            s["outcome_pnl"] = -1.0
+                            if s["status"] == "TP2_LOCKED_RUNNING":
+                                s["status"] = "WIN (TP2 Trailed / Locked +1.5R)"
+                                s["outcome_pnl"] = +1.5
+                            elif s["status"] == "TP1_BE_RUNNING":
+                                s["status"] = "WIN (TP1 Hit / Break-Even Exit)"
+                                s["outcome_pnl"] = +0.75
+                            else:
+                                s["status"] = "LOSS (SL Hit)"
+                                s["outcome_pnl"] = -1.0
                             s["resolved_at"] = now_utc_str
                             s["resolved_at_utc"] = now_utc_str
                             s["resolved_ts"] = now_utc_ts
                             if not s.get("notified_loss"):
                                 s["notified_loss"] = True
                                 send_telegram_resolution(s, "LOSS_SL")
-                        break
+
 
                     # Check Take Profit Stages:
                     # Stage 3: Full TP3 Hit (1:3 Target)
