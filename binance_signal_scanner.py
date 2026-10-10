@@ -12,7 +12,7 @@ from concurrent.futures import ThreadPoolExecutor
 sys.stdout.reconfigure(encoding='utf-8')
 
 # Global Constants & Risk Limits (Pro-Trader Hybrid Adaptive Model)
-MAX_ACTIVE_POSITIONS = 5          # Portfolio Heat Governor: Max 5 concurrent active trades
+MAX_ACTIVE_POSITIONS = 4          # Portfolio Heat Governor: Max 4 concurrent active trades
 CIRCUIT_COOLDOWN_LOSSES = 2       # Triggers 4-Hour Volatility Cooldown after 2 losses
 CIRCUIT_COOLDOWN_HOURS = 4        # 4 Hours market calming quarantine
 MAX_DAILY_HARD_STOP_LOSSES = 3    # Absolute Daily Hard Stop (Full stop until 00:00 UTC)
@@ -2267,10 +2267,17 @@ def record_new_signals_to_history(actionable_signals, history_data, open_symbols
                 "outcome_pnl": 0.0
             }
             if initial_status in ["OPEN", "PENDING_LIMIT"]:
+                active_positions_count += 1
                 # Dynamic Multi-Timeframe Alignment: Allow 1H structural setups in both directions
                 pass
 
                 if auto_trader and auto_trader.is_live_enabled():
+                    # Iron-clad Risk Governor: Check real-time active positions on Binance Futures
+                    live_pos = auto_trader.get_open_positions_detail()
+                    if live_pos is not None and len(live_pos) >= MAX_ACTIVE_POSITIONS:
+                        print(f"[!] Auto-Trader Risk Shield: Real Binance positions ({len(live_pos)}) reached max {MAX_ACTIVE_POSITIONS}. Blocked execution for {sym}.")
+                        continue
+
                     cb = history_data.get("circuit_breaker", {})
                     act["is_defensive"] = cb.get("is_defensive", False)
                     risk_val = float(os.environ.get("BINANCE_RISK_PCT_PER_TRADE", 3.0))
@@ -2289,7 +2296,6 @@ def record_new_signals_to_history(actionable_signals, history_data, open_symbols
                         act["executed_live"] = True
                         act["executed_margin"] = exec_res.get("margin_usdt")
                         act["executed_qty"] = exec_res.get("qty")
-                        active_positions_count += 1
                         send_telegram_execution_alert(exec_res, act)
                     else:
                         # Send Telegram Limit / Signal alert for Pending Limit setups

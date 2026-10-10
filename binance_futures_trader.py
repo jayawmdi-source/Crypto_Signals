@@ -266,8 +266,7 @@ class BinanceFuturesTrader:
                 return open_symbols
         except Exception as e:
             print(f"[!] Error fetching positionRisk for all symbols: {e}")
-            return None
-        return None
+        return []
 
     def get_open_positions_detail(self):
         """Fetch full details for all actively open positions on Binance Futures"""
@@ -285,14 +284,7 @@ class BinanceFuturesTrader:
                         mark_p = float(p.get("markPrice", 0.0))
                         unrealized_pnl = float(p.get("unRealizedProfit", 0.0))
                         lev = int(p.get("leverage", self.leverage))
-                        # In Binance Futures API:
-                        # - 'isolatedWallet' is the exact collateral deposited into the isolated position (matches Binance App "Margin" column).
-                        # - 'isolatedMargin' in positionRisk is isolatedWallet + unRealizedProfit (dynamic equity / liquidation margin).
-                        isolated_wallet = float(p.get("isolatedWallet", 0.0))
-                        if isolated_wallet > 0:
-                            margin = isolated_wallet
-                        else:
-                            margin = (abs(amt) * entry_p / lev) if lev > 0 else float(p.get("isolatedMargin", 0.0))
+                        margin = float(p.get("isolatedMargin", 0.0)) or (abs(amt) * entry_p / lev if lev > 0 else 0.0)
                         side = "BUY / LONG" if amt > 0 else "SELL / SHORT"
                         pnl_pct = ((mark_p - entry_p) / entry_p * 100 * lev) if (side == "BUY / LONG" and entry_p > 0) else (((entry_p - mark_p) / entry_p * 100 * lev) if entry_p > 0 else 0.0)
                         open_positions.append({
@@ -306,16 +298,14 @@ class BinanceFuturesTrader:
                             "leverage": lev,
                             "margin_type": p.get("marginType", "isolated").upper(),
                             "isolated_margin": round(margin, 2),
-                            "isolated_wallet": round(isolated_wallet, 2),
-                            "position_equity": round(float(p.get("isolatedMargin", 0.0)), 2),
                             "liquidation_price": float(p.get("liquidationPrice", 0.0))
                         })
                 return open_positions
-            print(f"[!] Warning: positionRisk returned status {resp.status_code}: {resp.text}")
-            return None
+            else:
+                print(f"[!] Error fetching position details ({resp.status_code}): {resp.text}")
+                return None
         except Exception as e:
             print(f"[!] Error fetching position details: {e}")
-            return None
         return None
 
     def get_recent_income(self, limit=100, income_type=None):
@@ -520,29 +510,20 @@ class BinanceFuturesTrader:
             return None
 
         symbol = sig.get("symbol")
+        
+        # HARD RISK GOVERNOR: Absolute Maximum 4 concurrent active positions on Binance Futures
+        open_positions = self.get_open_positions_detail()
+        if open_positions is not None and len(open_positions) >= 4:
+            print(f"[!] Auto-Trader Risk Shield: Maximum 4 positions cap reached ({len(open_positions)}/4). Skipping execution for {symbol}.")
+            return None
+
         sig_type = str(sig.get("type") or sig.get("signal") or "").upper()
         is_long = "BUY" in sig_type or "LONG" in sig_type
         side = "BUY" if is_long else "SELL"
         exit_side = "SELL" if is_long else "BUY"
         pos_side = ("LONG" if is_long else "SHORT") if self.is_hedge_mode else "BOTH"
 
-        # Multi-Timeframe Alignment & Directional Counter-Trend Liquidity Protection:
-        mtf_bias = str(sig.get("mtf_status", "")).upper()
-        sweep_txt = str(sig.get("sweep") or sig.get("sweep_str") or "").lower()
-        has_sell_side_sweep = bool(sig.get("has_bull_sweep")) or ("sell-side" in sweep_txt or "sell side" in sweep_txt or "sell_side" in sweep_txt)
-        has_buy_side_sweep = bool(sig.get("has_bear_sweep")) or ("buy-side" in sweep_txt or "buy side" in sweep_txt or "buy_side" in sweep_txt)
-
-        # Institutional Rule: In 4H Bearish trend, ONLY allow Long if a verified Sell-Side liquidity sweep occurred (lows swept & reclaimed)
-        if is_long and "BEARISH" in mtf_bias and not has_sell_side_sweep:
-            print(f"[!] Auto-Trader Safety: Blocked counter-trend LONG execution on {symbol} - 4H Macro is BEARISH without verified Sell-Side Liquidity Sweep.")
-            return None
-
-        # Institutional Rule: In 4H Bullish trend, ONLY allow Short if a verified Buy-Side liquidity sweep occurred (highs swept & rejected)
-        if not is_long and "BULLISH" in mtf_bias and not has_buy_side_sweep:
-            print(f"[!] Auto-Trader Safety: Blocked counter-trend SHORT execution on {symbol} - 4H Macro is BULLISH without verified Buy-Side Liquidity Sweep.")
-            return None
-
-        # 1H RSI Momentum Exhaustion Guard
+        # Dynamic Multi-Timeframe Alignment: Allow 1H structural reversals even if 4H is counter-trend
         rsi_1h = float(sig.get("rsi_1h") or 50.0)
         if is_long and rsi_1h > 70.0:
             print(f"[!] Auto-Trader Safety: Blocked LONG execution on {symbol} - 1H RSI is overbought ({rsi_1h:.1f}).")
