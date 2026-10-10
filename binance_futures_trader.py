@@ -589,17 +589,34 @@ class BinanceFuturesTrader:
         default_risk_pct = float(os.environ.get("BINANCE_RISK_PCT_PER_TRADE", 3.0))
         size_pct = float(sig.get("risk_pct_override") or (default_risk_pct / 2.0 if sig.get("is_defensive") else default_risk_pct))
         risk_usdt = avail_usdt * (size_pct / 100.0)
-        stop_dist = abs(entry_price - sl_price)
-        
+        # Double-Barrier Safety Firewall:
+        # 1. Enforce minimum 3.0% Stop Loss buffer on ALL execution orders
+        min_stop_dist = entry_price * 0.030
+        if stop_dist < min_stop_dist:
+            stop_dist = min_stop_dist
+            if side == "BUY" or pos_side == "LONG":
+                sl_price = entry_price - min_stop_dist
+                tp_price = entry_price + (min_stop_dist * 3.0)
+            else:
+                sl_price = entry_price + min_stop_dist
+                tp_price = entry_price - (min_stop_dist * 3.0)
+
         if stop_dist > 0:
             raw_qty = risk_usdt / stop_dist
         else:
             raw_qty = (avail_usdt * 0.10 * self.leverage) / entry_price
             
         margin_allocated = (raw_qty * entry_price) / self.leverage
-        # Cap margin at max 25% of available USDT per single position to prevent over-leverage
-        if margin_allocated > avail_usdt * 0.25:
-            margin_allocated = avail_usdt * 0.25
+        # 2. Dynamic Percentage-Based Margin Cap (Auto-Compounds as Wallet Grows):
+        # In a 4-position portfolio, each position is capped at max 10% of Available USDT Margin.
+        # This auto-scales dynamically with wallet balance (No manual code changes needed as account grows).
+        max_margin_cap = max(5.00, avail_usdt * 0.10)
+        if symbol == "BTCUSDT":
+            # Binance hard exchange minimum for BTCUSDT is 0.001 BTC (~$8.30 at 10x)
+            max_margin_cap = max(max_margin_cap, 9.0)
+            
+        if margin_allocated > max_margin_cap:
+            margin_allocated = max_margin_cap
             raw_qty = (margin_allocated * self.leverage) / entry_price
         
         if avail_usdt < 3.0 or margin_allocated < 0.50:

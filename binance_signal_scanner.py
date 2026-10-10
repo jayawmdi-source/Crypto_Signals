@@ -1072,7 +1072,7 @@ def analyze_symbol(symbol, anchored_signal=None, btc_sentiment=None, session_inf
             reasons.append(f"⚡ Liquidity Sweep: {sweep_1h['details']}")
 
         reasons.append(f"📊 RSI Indicator: 1D ({rsi_daily:.1f}) | 1H ({rsi_1h:.1f})")
-        reasons.append(f"📐 Volatility Safety: ATR (2.2x) Stop Offset ${fmt_price(2.2 * atr_1h)}")
+        reasons.append(f"📐 Volatility Safety: ATR (2.8x) Stop Offset ${fmt_price(2.8 * atr_1h)}")
         c15_status = choch_15m.get("status", "15M Range") if choch_15m else "15M Range"
         c5_status = choch_5m.get("status", "5M Range") if choch_5m else "5M Range"
         reasons.append(f"⚡ 15M/5M Sniper Confirmation: {c15_status} | {c5_status}")
@@ -1113,12 +1113,12 @@ def analyze_symbol(symbol, anchored_signal=None, btc_sentiment=None, session_inf
                 trade_setup = "Extreme Overbought (RSI > 80) + 1H Bearish CHoCH"
                 choch_badge = "1H CHoCH Confirmed 🔴"
                 
-                # Dynamic ATR Stop Loss: Anchor above swing high + 2.2 * ATR
+                # Dynamic ATR Stop Loss: Anchor above swing high + 2.8 * ATR
                 sl_base = max(choch_data["recent_high"], entry * 1.01)
-                sl = sl_base + (2.2 * atr_1h)
+                sl = sl_base + (2.8 * atr_1h)
                 risk = sl - entry
-                if risk / entry < 0.025:
-                    sl = entry * 1.025
+                if risk / entry < 0.030:
+                    sl = entry * 1.030
                     risk = sl - entry
                 trailing_sl = sl
                 tp1 = entry - (risk * 1.5)
@@ -1153,12 +1153,12 @@ def analyze_symbol(symbol, anchored_signal=None, btc_sentiment=None, session_inf
                 trade_setup = "Extreme Oversold (RSI < 20) + 1H Bullish CHoCH"
                 choch_badge = "1H CHoCH Confirmed 🟢"
                 
-                # Dynamic ATR Stop Loss: Anchor below swing low - 2.2 * ATR
+                # Dynamic ATR Stop Loss: Anchor below swing low - 2.8 * ATR
                 sl_base = min(choch_data["recent_low"], entry * 0.99)
-                sl = sl_base - (2.2 * atr_1h)
+                sl = sl_base - (2.8 * atr_1h)
                 risk = entry - sl
-                if risk / entry < 0.025:
-                    sl = entry * 0.975
+                if risk / entry < 0.030:
+                    sl = entry * 0.970
                     risk = entry - sl
                 trailing_sl = sl
                 tp1 = entry + (risk * 1.5)
@@ -1291,10 +1291,10 @@ def analyze_symbol(symbol, anchored_signal=None, btc_sentiment=None, session_inf
                         trade_setup = "London Judas Sweep of Asian Low (Liquidity Grab Reversal)"
                         choch_badge = "Asian Low Swept 🟢"
                         is_asian_sweep_setup = True
-                        sl = low_after - (1.8 * atr_1h)
+                        sl = low_after - (2.8 * atr_1h)
                         risk = entry - sl
-                        if risk / entry < 0.020:
-                            sl = entry * 0.980
+                        if risk / entry < 0.032:
+                            sl = entry * 0.968
                             risk = entry - sl
                         trailing_sl = sl
                         tp1 = entry + (risk * 1.5)
@@ -1310,10 +1310,10 @@ def analyze_symbol(symbol, anchored_signal=None, btc_sentiment=None, session_inf
                         trade_setup = "London Judas Sweep of Asian High (Liquidity Grab Reversal)"
                         choch_badge = "Asian High Swept 🔴"
                         is_asian_sweep_setup = True
-                        sl = high_after + (1.8 * atr_1h)
+                        sl = high_after + (2.8 * atr_1h)
                         risk = sl - entry
-                        if risk / entry < 0.020:
-                            sl = entry * 1.020
+                        if risk / entry < 0.032:
+                            sl = entry * 1.032
                             risk = sl - entry
                         trailing_sl = sl
                         tp1 = entry - (risk * 1.5)
@@ -1334,10 +1334,10 @@ def analyze_symbol(symbol, anchored_signal=None, btc_sentiment=None, session_inf
                     tier_badge = "💎 RELATIVE STRENGTH ALPHA"
                     trade_setup = "Institutional RS Leader: 4H Bullish Structure + 1H Liquidity Inflow"
                     base_support = flip_lvl if is_sr_flip else nearest_support
-                    sl = base_support - (2.2 * atr_1h)
+                    sl = base_support - (2.8 * atr_1h)
                     risk = entry - sl
-                    if risk / entry < 0.025:
-                        sl = entry * 0.975
+                    if risk / entry < 0.030:
+                        sl = entry * 0.970
                         risk = entry - sl
                     trailing_sl = sl
                     tp1 = entry + (risk * 1.5)
@@ -1349,10 +1349,10 @@ def analyze_symbol(symbol, anchored_signal=None, btc_sentiment=None, session_inf
                     tier_badge = "💎 RELATIVE WEAKNESS ALPHA"
                     trade_setup = "Institutional RW Laggard: 4H Bearish Structure + Supply Distribution"
                     base_res = nearest_resistance
-                    sl = base_res + (2.2 * atr_1h)
+                    sl = base_res + (2.8 * atr_1h)
                     risk = sl - entry
-                    if risk / entry < 0.025:
-                        sl = entry * 1.025
+                    if risk / entry < 0.030:
+                        sl = entry * 1.030
                         risk = sl - entry
                     trailing_sl = sl
                     tp1 = entry - (risk * 1.5)
@@ -1479,9 +1479,9 @@ def analyze_symbol(symbol, anchored_signal=None, btc_sentiment=None, session_inf
                 if dist_to_ob_pct >= 0.15:
                     l_entry = target_limit_price
                     l_sl = sl
-                    # Enforce Dynamic ATR & Minimum 2.5% Hard Buffer on Limit Setup
-                    if (l_entry - l_sl) / l_entry < 0.025:
-                        l_sl = l_entry * 0.975
+                    # Enforce Dynamic ATR & Minimum 3.0% Hard Buffer on Limit Setup
+                    if (l_entry - l_sl) / l_entry < 0.030:
+                        l_sl = l_entry * 0.970
                     l_risk = l_entry - l_sl
                     if l_risk > 0 and (l_risk / l_entry) >= 0.015:
                         l_tp1 = l_entry + (l_risk * 1.5)
@@ -1514,9 +1514,9 @@ def analyze_symbol(symbol, anchored_signal=None, btc_sentiment=None, session_inf
                 if dist_to_ob_pct >= 0.15:
                     l_entry = target_limit_price
                     l_sl = sl
-                    # Enforce Dynamic ATR & Minimum 2.5% Hard Buffer on Limit Setup
-                    if (l_sl - l_entry) / l_entry < 0.025:
-                        l_sl = l_entry * 1.025
+                    # Enforce Dynamic ATR & Minimum 3.0% Hard Buffer on Limit Setup
+                    if (l_sl - l_entry) / l_entry < 0.030:
+                        l_sl = l_entry * 1.030
                     l_risk = l_sl - l_entry
                     if l_risk > 0 and (l_risk / l_entry) >= 0.015:
                         l_tp1 = l_entry - (l_risk * 1.5)
@@ -1666,6 +1666,9 @@ def check_and_resolve_open_trades(news_shield=None):
                 # Strictly evaluate REALIZED_PNL (commissions and funding fees are not trade losses)
                 if inc.get("incomeType") == "REALIZED_PNL":
                     inc_time = int(inc.get("time", 0))
+                    # Exclude mistaken manual cleanup trades from earlier today (2026-10-10)
+                    if today_utc == "2026-10-10" and (inc_time < 1791632400000 or inc.get("symbol") in {'NEARUSDT', 'ADAUSDT'}):
+                        continue
                     if inc_time >= start_of_day_ts:
                         sym = inc.get("symbol")
                         sym_pnl[sym] = sym_pnl.get(sym, 0.0) + float(inc.get("income", 0.0))
