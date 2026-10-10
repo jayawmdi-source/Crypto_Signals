@@ -12,7 +12,7 @@ from concurrent.futures import ThreadPoolExecutor
 sys.stdout.reconfigure(encoding='utf-8')
 
 # Global Constants & Risk Limits (Pro-Trader Hybrid Adaptive Model)
-MAX_ACTIVE_POSITIONS = 4          # Portfolio Heat Governor: Max 4 concurrent active trades
+MAX_ACTIVE_POSITIONS = 5          # Portfolio Heat Governor: Max 5 concurrent active trades
 CIRCUIT_COOLDOWN_LOSSES = 2       # Triggers 4-Hour Volatility Cooldown after 2 losses
 CIRCUIT_COOLDOWN_HOURS = 4        # 4 Hours market calming quarantine
 MAX_DAILY_HARD_STOP_LOSSES = 3    # Absolute Daily Hard Stop (Full stop until 00:00 UTC)
@@ -147,17 +147,17 @@ def get_market_session():
         return {
             "name": "Asian Session",
             "badge": "🌏 ASIAN SESSION",
-            "tier": "B",
-            "is_prime": False,
-            "desc": "Range Building (Liquidity Pool Setup)"
+            "tier": "A-",
+            "is_prime": True,
+            "desc": "Active Asian Session Liquidity & Range Structure"
         }
     else:
         return {
-            "name": "Off-Hours Dead Zone",
-            "badge": "💤 OFF-HOURS",
-            "tier": "C",
-            "is_prime": False,
-            "desc": "Low Volatility / Chop"
+            "name": "Late NY / Transition",
+            "badge": "🌐 GLOBAL WRAP",
+            "tier": "B",
+            "is_prime": True,
+            "desc": "Late NY / Asian Pre-Market Transition"
         }
 
 def send_telegram_new_signal(sig):
@@ -1267,57 +1267,179 @@ def analyze_symbol(symbol, anchored_signal=None, btc_sentiment=None, session_inf
                     ob_info_str = f"Bearish 1H OB [${fmt_price(bear_ob_1h['bottom'])} - ${fmt_price(bear_ob_1h['top'])}]"
 
         else:
-            signal_type = "WATCHLIST"
-            if is_extreme_overbought:
-                tier_badge = "🛡️ PUMP PROTECTED"
-                trade_setup = f"RSI Overbought ({rsi_daily:.1f}), WAITING for 1H CHoCH (< ${choch_data['key_hl']})"
-                choch_badge = f"Waiting CHoCH (< ${choch_data['key_hl']})"
-                reasons.append(f"Protected against Parabolic Pump: Waiting for 1H CHoCH below ${choch_data['key_hl']}")
-            else:
-                tier_badge = "WATCHLIST"
-                reasons.append(f"Mid-range RSI ({rsi_daily:.1f}). Daily S&R: Sup ${fmt_price(nearest_support)} | Res ${fmt_price(nearest_resistance)}")
-                if choch_data["has_bearish_choch"]:
-                    choch_badge = "1H CHoCH Bearish"
-                elif choch_data["has_bullish_choch"]:
-                    choch_badge = "1H CHoCH Bullish"
+            # -----------------------------------------------------------------
+            # TIER 3: ASIAN RANGE LIQUIDITY SWEEP (London Judas Swing)
+            # -----------------------------------------------------------------
+            is_asian_sweep_setup = False
+            utc_now = datetime.now(timezone.utc)
+            today_utc_00 = int(utc_now.replace(hour=0, minute=0, second=0, microsecond=0).timestamp() * 1000)
+            today_utc_07 = int(utc_now.replace(hour=7, minute=0, second=0, microsecond=0).timestamp() * 1000)
+            
+            if klines_1h and len(klines_1h) >= 12:
+                asia_bars = [k for k in klines_1h if today_utc_00 <= k[0] < today_utc_07]
+                after_bars = [k for k in klines_1h if k[0] >= today_utc_07]
+                if len(asia_bars) >= 4 and after_bars and utc_now.hour >= 7:
+                    a_high = max(float(k[2]) for k in asia_bars)
+                    a_low = min(float(k[3]) for k in asia_bars)
+                    low_after = min(float(k[3]) for k in after_bars)
+                    high_after = max(float(k[2]) for k in after_bars)
+                    
+                    # Bullish Judas Sweep: Swept Asian Low & price reclaimed above Asian Low
+                    if low_after < a_low and entry > a_low:
+                        signal_type = "BUY / LONG"
+                        tier_badge = "⚡ ASIAN RANGE SWEEP"
+                        trade_setup = "London Judas Sweep of Asian Low (Liquidity Grab Reversal)"
+                        choch_badge = "Asian Low Swept 🟢"
+                        is_asian_sweep_setup = True
+                        sl = low_after - (1.8 * atr_1h)
+                        risk = entry - sl
+                        if risk / entry < 0.020:
+                            sl = entry * 0.980
+                            risk = entry - sl
+                        trailing_sl = sl
+                        tp1 = entry + (risk * 1.5)
+                        tp2 = entry + (risk * 2.0)
+                        tp = entry + (risk * 3.0)
+                        reasons.append(f"⚡ Asian Range Sweep: Swept Asian Low (${fmt_price(a_low)}) to ${fmt_price(low_after)}")
+                        reasons.append("⚡ Institutional Reclaim: Price surged back above Asian Low structure")
+                    
+                    # Bearish Judas Sweep: Swept Asian High & price rejected below Asian High
+                    elif high_after > a_high and entry < a_high:
+                        signal_type = "SELL / SHORT"
+                        tier_badge = "⚡ ASIAN RANGE SWEEP"
+                        trade_setup = "London Judas Sweep of Asian High (Liquidity Grab Reversal)"
+                        choch_badge = "Asian High Swept 🔴"
+                        is_asian_sweep_setup = True
+                        sl = high_after + (1.8 * atr_1h)
+                        risk = sl - entry
+                        if risk / entry < 0.020:
+                            sl = entry * 1.020
+                            risk = sl - entry
+                        trailing_sl = sl
+                        tp1 = entry - (risk * 1.5)
+                        tp2 = entry - (risk * 2.0)
+                        tp = entry - (risk * 3.0)
+                        reasons.append(f"⚡ Asian Range Sweep: Swept Asian High (${fmt_price(a_high)}) to ${fmt_price(high_after)}")
+                        reasons.append("⚡ Institutional Rejection: Price closed back below Asian High structure")
 
-        # Apply the 5 High-Probability Sniper Filters for Maximum Win-Rate:
+            # -----------------------------------------------------------------
+            # TIER 4: RELATIVE STRENGTH (RS) / RELATIVE WEAKNESS (RW) ALPHA
+            # -----------------------------------------------------------------
+            if not is_asian_sweep_setup:
+                is_rs_leader = (mtf_4h["bias"] == "BULLISH") and (rsi_1h >= 52.0) and (sweep_1h["has_bull_sweep"] or bull_fvg_1h or bull_ob_1h) and (dist_to_support_pct <= 5.5 or is_sr_flip)
+                is_rw_laggard = (mtf_4h["bias"] == "BEARISH") and (rsi_1h <= 48.0) and (sweep_1h["has_bear_sweep"] or bear_fvg_1h or bear_ob_1h) and (dist_to_resistance_pct <= 5.5 or is_sr_flip)
+
+                if is_rs_leader:
+                    signal_type = "BUY / LONG"
+                    tier_badge = "💎 RELATIVE STRENGTH ALPHA"
+                    trade_setup = "Institutional RS Leader: 4H Bullish Structure + 1H Liquidity Inflow"
+                    base_support = flip_lvl if is_sr_flip else nearest_support
+                    sl = base_support - (2.2 * atr_1h)
+                    risk = entry - sl
+                    if risk / entry < 0.025:
+                        sl = entry * 0.975
+                        risk = entry - sl
+                    trailing_sl = sl
+                    tp1 = entry + (risk * 1.5)
+                    tp2 = entry + (risk * 2.0)
+                    tp = entry + (risk * 3.0)
+                    reasons.append("💎 Relative Strength: Outperforming market with aligned 4H bias & 1H liquidity")
+                elif is_rw_laggard:
+                    signal_type = "SELL / SHORT"
+                    tier_badge = "💎 RELATIVE WEAKNESS ALPHA"
+                    trade_setup = "Institutional RW Laggard: 4H Bearish Structure + Supply Distribution"
+                    base_res = nearest_resistance
+                    sl = base_res + (2.2 * atr_1h)
+                    risk = sl - entry
+                    if risk / entry < 0.025:
+                        sl = entry * 1.025
+                        risk = sl - entry
+                    trailing_sl = sl
+                    tp1 = entry - (risk * 1.5)
+                    tp2 = entry - (risk * 2.0)
+                    tp = entry - (risk * 3.0)
+                    reasons.append("💎 Relative Weakness: Underperforming market with aligned 4H bias & supply rejection")
+                else:
+                    signal_type = "WATCHLIST"
+                    if is_extreme_overbought:
+                        tier_badge = "🛡️ PUMP PROTECTED"
+                        trade_setup = f"RSI Overbought ({rsi_daily:.1f}), WAITING for 1H CHoCH (< ${choch_data['key_hl']})"
+                        choch_badge = f"Waiting CHoCH (< ${choch_data['key_hl']})"
+                        reasons.append(f"Protected against Parabolic Pump: Waiting for 1H CHoCH below ${choch_data['key_hl']}")
+                    else:
+                        tier_badge = "WATCHLIST"
+                        reasons.append(f"Mid-range RSI ({rsi_daily:.1f}). Daily S&R: Sup ${fmt_price(nearest_support)} | Res ${fmt_price(nearest_resistance)}")
+                        if choch_data["has_bearish_choch"]:
+                            choch_badge = "1H CHoCH Bearish"
+                        elif choch_data["has_bullish_choch"]:
+                            choch_badge = "1H CHoCH Bullish"
+
+        # Apply the High-Probability Sniper Filters:
         # 1. London & NY Prime Session Guard
-        # 2. Strict BTC Macro Correlation Guard
-        # 3. Volume Expansion Filter (VSA >= 1.30x SMA20)
+        # 2. Smart BTC Macro Correlation Guard with RS Decoupling
+        # 3. Dynamic Volume Expansion Filter (Completed Candle + Pace-Adjusted Live Candle)
         # 4. Nested 4H + 1H Order Block Confluence
         # 5. Derivatives Crowded Trade / Funding Rate Shield (>+0.035% or <-0.035%)
         if signal_type in ["BUY / LONG", "SELL / SHORT"] and not anchored_signal:
-            # 1. Session Guard: Allow live entry execution ONLY during Prime Sessions
+            # 1. Session Guard: Allow all active sessions (London, NY, Asian, Global)
             if session_info and not session_info.get("is_prime", True):
                 signal_type = "WATCHLIST"
                 tier_badge = "💤 OFF-HOURS WATCHLIST"
-                reasons.append(f"💤 Prime Session Guard: Entry held for London/NY Open (Low Off-Hours Volatility)")
+                reasons.append(f"💤 Prime Session Guard: Entry held for active market liquidity")
 
-            # 2. Strict BTC Macro Correlation Guard
+            # 2. Smart BTC Macro Correlation Guard
             if btc_sentiment:
                 is_long_sig = "BUY" in signal_type or "LONG" in signal_type
+                is_decoupled = tier_badge in ["💎 RELATIVE STRENGTH ALPHA", "💎 RELATIVE WEAKNESS ALPHA", "⚡ ASIAN RANGE SWEEP"]
                 if is_long_sig and (btc_sentiment.get("is_dumping") or "BEARISH" in str(btc_sentiment.get("status", ""))):
-                    signal_type = "WATCHLIST"
-                    tier_badge = "🛡️ BTC DUMP WATCHLIST"
-                    reasons.append(f"⚠️ BTC Macro Shield: Bitcoin is Bearish/Dumping ({btc_sentiment.get('reason')}). Long held in Watchlist.")
+                    if is_decoupled:
+                        reasons.append(f"💎 RS Alpha Bypass: Leading setup decoupled from BTC ({btc_sentiment.get('reason')}). Signal permitted.")
+                    else:
+                        signal_type = "WATCHLIST"
+                        tier_badge = "🛡️ BTC DUMP WATCHLIST"
+                        reasons.append(f"⚠️ BTC Macro Shield: Bitcoin is Bearish/Dumping ({btc_sentiment.get('reason')}). Long held in Watchlist.")
                 elif not is_long_sig and (btc_sentiment.get("is_pumping") or "BULLISH" in str(btc_sentiment.get("status", ""))):
-                    signal_type = "WATCHLIST"
-                    tier_badge = "🛡️ BTC PUMP WATCHLIST"
-                    reasons.append(f"⚠️ BTC Pump Shield: Bitcoin is Bullish/Pumping ({btc_sentiment.get('reason')}). Short held in Watchlist.")
+                    if is_decoupled:
+                        reasons.append(f"💎 RW Alpha Bypass: Lagging setup decoupled from BTC ({btc_sentiment.get('reason')}). Signal permitted.")
+                    else:
+                        signal_type = "WATCHLIST"
+                        tier_badge = "🛡️ BTC PUMP WATCHLIST"
+                        reasons.append(f"⚠️ BTC Pump Shield: Bitcoin is Bullish/Pumping ({btc_sentiment.get('reason')}). Short held in Watchlist.")
 
-            # 3. Volume Expansion Filter (VSA: >= 1.30x 20-SMA)
+            # 3. Dynamic Volume Expansion Filter (Completed Candle + Pace-Adjusted Live Candle)
             volumes_1h = [float(k[5]) for k in klines_1h]
-            if len(volumes_1h) >= 21:
-                vol_sma_1h = sum(volumes_1h[-21:-1]) / 20.0
+            if len(volumes_1h) >= 22:
+                vol_sma_1h = sum(volumes_1h[-22:-2]) / 20.0
+                prev_vol_1h = volumes_1h[-2]
+                prev_v_ratio = (prev_vol_1h / vol_sma_1h) if vol_sma_1h > 0 else 1.0
+                
+                mins_in_hour = max(1, datetime.now(timezone.utc).minute)
                 curr_vol_1h = volumes_1h[-1]
-                v_ratio = (curr_vol_1h / vol_sma_1h) if vol_sma_1h > 0 else 1.0
-                if v_ratio < 1.30 and signal_type in ["BUY / LONG", "SELL / SHORT"]:
+                paced_curr_vol = curr_vol_1h * (60.0 / mins_in_hour)
+                paced_v_ratio = (paced_curr_vol / vol_sma_1h) if vol_sma_1h > 0 else 1.0
+                
+                v_ratio = max(prev_v_ratio, paced_v_ratio)
+                is_weekend = datetime.now(timezone.utc).weekday() >= 5
+                is_sweep_setup = (tier_badge == "⚡ ASIAN RANGE SWEEP") or (sweep_1h and (sweep_1h.get("has_bull_sweep") or sweep_1h.get("has_bear_sweep")))
+                
+                if is_sweep_setup:
+                    vol_cutoff = 0.35
+                elif is_weekend:
+                    vol_cutoff = 0.40
+                else:
+                    vol_cutoff = 0.50
+
+                if v_ratio < vol_cutoff and signal_type in ["BUY / LONG", "SELL / SHORT"]:
                     signal_type = "WATCHLIST"
                     tier_badge = "📉 LOW VOLUME WATCHLIST"
-                    reasons.append(f"⚠️ Volume Expansion Guard: 1H Volume ({v_ratio:.2f}x) is below 1.30x SMA20 threshold")
+                    reasons.append(f"⚠️ Volume Guard: 1H Volume ({v_ratio:.2f}x) is below {vol_cutoff:.2f}x baseline (Low Market Participation)")
                 elif signal_type in ["BUY / LONG", "SELL / SHORT"]:
-                    reasons.append(f"📊 Volume Expansion Confirmed: 1H Volume ({v_ratio:.2f}x vs 20-SMA)")
+                    if v_ratio >= 1.25:
+                        reasons.append(f"🔥 High Volume Surge Confirmed: 1H Volume ({v_ratio:.2f}x vs 20-SMA)")
+                    else:
+                        reasons.append(f"📊 Healthy Volume Confirmed: 1H Volume ({v_ratio:.2f}x vs 20-SMA)")
+
+
 
             # 4. Nested 4H + 1H Order Block Confluence Check
             klines_4h_cb = get_klines(symbol, interval="4h", limit=25)
@@ -1433,10 +1555,10 @@ def analyze_symbol(symbol, anchored_signal=None, btc_sentiment=None, session_inf
                 tp = limit_setup['raw_limit_tp']
                 reasons.append(f"💧 FVG Retest Guard Active: Entry set at FVG 25% equilibrium zone (${limit_setup['limit_entry']})")
             else:
-                # Require limit setup for 80%+ win rate; route to WATCHLIST if FVG retest zone unavailable
-                signal_type = "WATCHLIST"
-                tier_badge = "👀 WATCHLIST (Awaiting FVG Retest)"
-                reasons.append("⚠️ Retest Guard: Market entry bypassed; awaiting 1H FVG Limit Retest zone for precision entry.")
+                # Direct Institutional Zone Entry (Ready for Market Execution)
+                action_status = "READY"
+                action_label = f"READY NOW @ ${fmt_price(entry)}"
+                reasons.append("🟢 Instant Entry: Confirmed institutional zone bounce. Ready for immediate entry.")
 
     risk_pct = 0.0
     reward_pct = 0.0
@@ -1675,8 +1797,16 @@ def check_and_resolve_open_trades(news_shield=None):
                     continue
 
             sig_ts = s.get("timestamp", 0)
-            kl = get_klines(s["symbol"], interval="1h", limit=60)
+            kl = get_klines(s["symbol"], interval="1h", limit=160)
             if not kl:
+                continue
+
+            # Auto-expire stale trades open for > 96 hours (4 days) without resolution
+            if curr_status in ["OPEN", "TP1_BE_RUNNING", "TP2_LOCKED_RUNNING"] and (now_ts - sig_ts) > (96 * 3600 * 1000):
+                s["status"] = "CLOSED (Time Expired / Stale)"
+                s["outcome_pnl"] = 0.0
+                s["resolved_at"] = datetime.now().strftime('%Y-%m-%d %H:%M')
+                s["resolved_ts"] = now_ts
                 continue
 
             # Ensure trailing_sl exists
@@ -1699,6 +1829,7 @@ def check_and_resolve_open_trades(news_shield=None):
                     s["status"] = "EXPIRED (Limit Unfilled)"
                     s["resolved_at"] = datetime.now().strftime('%Y-%m-%d %H:%M')
                     continue
+
 
                 future_bars = [bar for bar in kl if (bar[0] + 3600000) >= sig_ts]
                 is_filled = False
@@ -2056,7 +2187,8 @@ def record_new_signals_to_history(actionable_signals, history_data, open_symbols
         real_open = auto_trader.get_all_open_positions()
         active_positions_count = len(real_open)
     else:
-        active_positions_count = len([s for s in existing_signals if s.get("status") in ["OPEN", "TP1_BE_RUNNING", "TP2_LOCKED_RUNNING"]])
+        # Strictly count trades carrying open downside risk (exclude zero-risk break-even runners)
+        active_positions_count = len([s for s in existing_signals if s.get("status") in ["OPEN", "PENDING_LIMIT"]])
     circuit_breaker = history_data.get("circuit_breaker", {})
     is_circuit_tripped = circuit_breaker.get("is_tripped", False)
 
@@ -2134,7 +2266,7 @@ def record_new_signals_to_history(actionable_signals, history_data, open_symbols
                 "status": initial_status,
                 "outcome_pnl": 0.0
             }
-            if initial_status == "OPEN":
+            if initial_status in ["OPEN", "PENDING_LIMIT"]:
                 # Dynamic Multi-Timeframe Alignment: Allow 1H structural setups in both directions
                 pass
 
@@ -2221,22 +2353,22 @@ def get_top_pairs(limit=None):
                 if sym.endswith('BUSDT') and sym not in real_b_cryptos:
                     continue
 
-                # Sniper Liquidity Filter: strictly require >= $35M (35,000,000 USDT) 24h quote volume
+                # Sniper Liquidity Filter: require >= $20M (20,000,000 USDT) 24h quote volume
                 # Eliminates illiquid low-cap pairs prone to whale manipulation, spread slippage, and stop-hunts
                 try:
                     q_vol = float(t.get('quoteVolume', 0))
                 except Exception:
                     q_vol = 0.0
-                if q_vol < 35_000_000:
+                if q_vol < 20_000_000:
                     continue
 
                 usdt_pairs.append(t)
 
-            # 1. Top Pure Crypto Volume Leaders (strictly >= $25M)
+            # 1. Top Pure Crypto Volume Leaders (strictly >= $20M)
             usdt_pairs.sort(key=lambda x: float(x.get('quoteVolume', 0)), reverse=True)
             top_volume_symbols = [t['symbol'] for t in usdt_pairs[:limit]]
 
-            # 2. Top 20 Pure Crypto Price & Volume Gainers/Movers of the day (strictly >= $25M)
+            # 2. Top 20 Pure Crypto Price & Volume Gainers/Movers of the day (strictly >= $20M)
             usdt_pairs_by_gainer = sorted(usdt_pairs, key=lambda x: abs(float(x.get('priceChangePercent', 0))), reverse=True)
             top_gainer_symbols = [t['symbol'] for t in usdt_pairs_by_gainer[:20]]
 
@@ -2245,7 +2377,7 @@ def get_top_pairs(limit=None):
 
             if len(combined_symbols) >= 20:
                 min_vol = float(usdt_pairs[min(limit-1, len(usdt_pairs)-1)].get('quoteVolume', 0)) / 1e6
-                print(f"[+] Selected {len(combined_symbols)} 100% Pure Crypto Futures Pairs with >= $25M Volume ({len(top_volume_symbols)} Leaders [Min: ${min_vol:.1f}M] + Top 20 Gainers)")
+                print(f"[+] Selected {len(combined_symbols)} 100% Pure Crypto Futures Pairs with >= $20M Volume ({len(top_volume_symbols)} Leaders [Min: ${min_vol:.1f}M] + Top 20 Gainers)")
                 return combined_symbols
     except Exception as e:
         print(f"[!] Warning: Dynamic Top {limit} fetch failed ({e}). Using curated list.")
@@ -2273,15 +2405,13 @@ def get_btc_macro_sentiment():
     
     change_3h = ((current_p - closes[-4]) / closes[-4]) * 100 if len(closes) >= 4 else 0.0
     
-    is_dumping = change_3h < -0.5 or (current_p < ema20 and rsi < 48)
-    is_pumping = change_3h > 1.8 or (current_p > ema20 and rsi > 70)
+    # Realistic market crash/dump thresholds (avoids false alarm freezes on micro-fluctuations):
+    is_dumping = change_3h < -1.8 or (current_p < ema50 and rsi < 38)
+    is_pumping = change_3h > 2.5 or (current_p > ema50 and rsi > 75)
     
-    btc_bullish_trend = (current_p >= ema50) or (ema20 >= ema50)
-    btc_bearish_trend = (current_p <= ema50) or (ema20 <= ema50)
+    btc_bullish_trend = (current_p >= ema50) or (ema20 >= ema50) or (rsi >= 46)
+    btc_bearish_trend = (current_p <= ema50) or (ema20 <= ema50) or (rsi <= 54)
     
-    # Strict BTC Trend Alignment Shield:
-    # Allow Altcoin Longs ONLY if BTC is not dumping AND BTC trend is not strictly bearish
-    # Allow Altcoin Shorts ONLY if BTC is not pumping AND BTC trend is not strictly bullish
     allow_longs = (not is_dumping) and btc_bullish_trend
     allow_shorts = (not is_pumping) and btc_bearish_trend
     
