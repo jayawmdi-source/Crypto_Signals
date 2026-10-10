@@ -545,17 +545,23 @@ class BinanceFuturesTrader:
         sl_price = float(sig.get("raw_sl") or sig.get("sl", 0))
         tp_price = float(sig.get("raw_tp") or sig.get("tp", 0))
 
-        # Always fetch live Futures market price to avoid any Spot vs Futures redenomination discrepancies
+        # Fetch live Futures market price, guard against adverse drift & mathematically lock 1:3 R:R
         try:
             ticker_resp = self.session.get(f"{BASE_URL}/fapi/v1/ticker/price", params={"symbol": symbol}, timeout=5)
             if ticker_resp.status_code == 200:
                 live_price = float(ticker_resp.json().get("price", 0))
                 if live_price > 0:
-                    if entry_price > 0 and abs(live_price - entry_price) / entry_price > 0.2:
-                        scale = live_price / entry_price
-                        sl_price *= scale
-                        tp_price *= scale
+                    if entry_price > 0:
+                        drift_pct = abs(live_price - entry_price) / entry_price
+                        # If price has drifted >1.2% from planned entry level, block chasing to preserve 1:3 R:R
+                        if drift_pct > 0.012:
+                            print(f"[!] Auto-Trader R:R Guard: Live market price (${live_price}) drifted {drift_pct*100:.2f}% from planned entry (${entry_price}). Chasing blocked to protect strict 1:3 R:R.")
+                            return None
                     entry_price = live_price
+                    # Mathematically lock Take Profit to strictly 3.0x Stop Loss distance from actual fill price
+                    stop_dist = abs(entry_price - sl_price)
+                    if stop_dist > 0:
+                        tp_price = (entry_price + (stop_dist * 3.0)) if is_long else (entry_price - (stop_dist * 3.0))
         except Exception:
             pass
 

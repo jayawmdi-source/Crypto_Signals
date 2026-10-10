@@ -2266,11 +2266,8 @@ def record_new_signals_to_history(actionable_signals, history_data, open_symbols
                 "status": initial_status,
                 "outcome_pnl": 0.0
             }
-            if initial_status in ["OPEN", "PENDING_LIMIT"]:
+            if initial_status == "OPEN":
                 active_positions_count += 1
-                # Dynamic Multi-Timeframe Alignment: Allow 1H structural setups in both directions
-                pass
-
                 if auto_trader and auto_trader.is_live_enabled():
                     # Iron-clad Risk Governor: Check real-time active positions on Binance Futures
                     live_pos = auto_trader.get_open_positions_detail()
@@ -2298,10 +2295,12 @@ def record_new_signals_to_history(actionable_signals, history_data, open_symbols
                         act["executed_qty"] = exec_res.get("qty")
                         send_telegram_execution_alert(exec_res, act)
                     else:
-                        # Send Telegram Limit / Signal alert for Pending Limit setups
                         send_telegram_new_signal(act)
                 else:
                     send_telegram_new_signal(act)
+            elif initial_status == "PENDING_LIMIT":
+                # For Limit Setups: Alert via Telegram, but wait for pullback in check_retest_and_execute_limit_orders to preserve exact 1:3 R:R
+                send_telegram_new_signal(act)
 
             existing_signals.append(new_item)
             existing_keys.add(key)
