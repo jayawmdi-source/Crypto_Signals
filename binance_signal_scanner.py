@@ -365,9 +365,9 @@ def send_telegram_resolution(sig, event_type):
         rem_m = sig.get("mins", 240) if sig else 240
         resume_t = sig.get("resume_time", "") if sig else ""
         msg = (
-            f"⏳ <b>CIRCUIT BREAKER: 4-HOUR VOLATILITY COOLDOWN</b> 🛡️\n"
+            f"⏳ <b>CIRCUIT BREAKER: 4-HOUR VOLATILITY COOLDOWN (3 LOSSES)</b> 🛡️\n"
             f"━━━━━━━━━━━━━━━━━━━━\n"
-            f"⚠️ Two trades have hit Stop Loss today. Rather than a rigid 24-hour freeze, the bot has entered a <b>4-Hour Market Calming Quarantine</b> to let flash news & macro chop settle.\n\n"
+            f"⚠️ Three trades have hit Stop Loss today. Rather than a rigid 24-hour freeze, the bot has entered a <b>4-Hour Market Calming Quarantine</b> to let flash news & macro chop settle.\n\n"
             f"⏱️ <b>Auto-Resume:</b> in ~{rem_m} mins {f'({resume_t} UTC)' if resume_t else ''}\n"
             f"🛡️ <b>Post-Cooldown Strategy:</b> Defensive Half-Risk (5% Margin) on next test setup.\n"
             f"🔒 Capital Preservation: Active."
@@ -381,9 +381,9 @@ def send_telegram_resolution(sig, event_type):
         )
     elif event_type == "CIRCUIT_HARD_STOP":
         msg = (
-            f"🛑 <b>DAILY DRAWDOWN HARD STOP (3 LOSSES)</b> 🛑\n"
+            f"🛑 <b>DAILY DRAWDOWN HARD STOP (4 LOSSES)</b> 🛑\n"
             f"━━━━━━━━━━━━━━━━━━━━\n"
-            f"⚠️ Three trades hit Stop Loss today. To strictly protect capital against sustained adverse market conditions, all new trading is stopped for the rest of the UTC day.\n"
+            f"⚠️ Four trades hit Stop Loss today. To strictly protect capital against sustained adverse market conditions, all new trading is stopped for the rest of the UTC day.\n"
             f"🌅 Trading will automatically resume tomorrow at 00:00 UTC."
         )
     elif event_type == "DEFENSIVE_CLEARED":
