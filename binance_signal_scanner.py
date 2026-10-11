@@ -953,27 +953,49 @@ def analyze_symbol(symbol, anchored_signal=None, btc_sentiment=None, session_inf
     projected_day_vol = current_vol * (24.0 / max(hours_passed, 1.0))
     vol_proj_ratio = projected_day_vol / vol_sma_20 if vol_sma_20 > 0 else 1.0
 
-    dist_to_support_pct = ((current_price - nearest_support) / current_price) * 100
-    dist_to_resistance_pct = ((nearest_resistance - current_price) / current_price) * 100
+    dist_to_support_pct = ((current_price - nearest_support) / current_price) * 100 if current_price > 0 else 0.0
+    dist_to_resistance_pct = ((nearest_resistance - current_price) / current_price) * 100 if current_price > 0 else 0.0
 
-    # Strict S/R Flip Validation: Broken recently (within 15 days) with volume expansion
-    is_sr_flip = False
-    flip_lvl = None
+    # Strict S/R Flip Validation: Broken recently (within 7 days) with volume expansion
+    # 1. Bullish Flip: Resistance broken upward and retested as support (For BUY / LONG)
+    is_bull_sr_flip = False
+    bull_flip_lvl = None
     resistances_below = [r for r in resistances if r < current_price]
     if resistances_below:
         candidate_res = max(resistances_below)
         breakout_valid = False
-        # Look for candle within last 15 days that closed above candidate_res with volume
-        for idx in range(max(1, len(close_prices)-15), len(close_prices)):
+        for idx in range(max(1, len(close_prices)-7), len(close_prices)):
             if close_prices[idx] > candidate_res and close_prices[idx-1] <= candidate_res:
                 if volumes[idx] >= vol_sma_20 * 1.05:
                     breakout_valid = True
                     break
         if breakout_valid:
             dist_above = ((current_price - candidate_res) / current_price) * 100
-            if 0.1 <= dist_above <= 2.8:
-                is_sr_flip = True
-                flip_lvl = candidate_res
+            if 0.1 <= dist_above <= 2.5:
+                is_bull_sr_flip = True
+                bull_flip_lvl = candidate_res
+
+    # 2. Bearish Flip: Support broken downward and retested as resistance (For SELL / SHORT)
+    is_bear_sr_flip = False
+    bear_flip_lvl = None
+    supports_above = [s for s in supports if s > current_price]
+    if supports_above:
+        candidate_sup = min(supports_above)
+        breakdown_valid = False
+        for idx in range(max(1, len(close_prices)-7), len(close_prices)):
+            if close_prices[idx] < candidate_sup and close_prices[idx-1] >= candidate_sup:
+                if volumes[idx] >= vol_sma_20 * 1.05:
+                    breakdown_valid = True
+                    break
+        if breakdown_valid:
+            dist_below = ((candidate_sup - current_price) / current_price) * 100
+            if 0.1 <= dist_below <= 2.5:
+                is_bear_sr_flip = True
+                bear_flip_lvl = candidate_sup
+
+    # Backward compatibility flag
+    is_sr_flip = is_bull_sr_flip
+    flip_lvl = bull_flip_lvl
 
     signal_type = "WATCHLIST"
     tier_badge = "WATCHLIST"
@@ -1174,28 +1196,49 @@ def analyze_symbol(symbol, anchored_signal=None, btc_sentiment=None, session_inf
         # ---------------------------------------------------------------------
         # TIER 1: INSTITUTIONAL SMC (4H Trend + Daily Line S&R + 1H OB/FVG)
         # ---------------------------------------------------------------------
-        elif ema_bullish and mtf_4h["bias"] == "BULLISH" and (dist_to_support_pct <= 3.5 or is_sr_flip) and (38 <= rsi_daily <= 68):
-            has_supply_conflict = bear_ob_1h and (bear_ob_1h.get('is_testing') or (bear_ob_1h['bottom'] * 0.995 <= entry <= bear_ob_1h['top'] * 1.01))
+        elif ema_bullish and mtf_4h["bias"] == "BULLISH" and (dist_to_support_pct <= 3.5 or is_bull_sr_flip) and (38 <= rsi_daily <= 68):
+            # 1. Supply Conflict Shield: Cannot Long directly into 1H Supply OB or Bearish FVG
+            has_supply_conflict = (bear_ob_1h and (bear_ob_1h.get('is_testing') or (bear_ob_1h['bottom'] * 0.995 <= entry <= bear_ob_1h['top'] * 1.01))) or \
+                                  (bear_fvg_1h and (bear_fvg_1h.get('is_testing') or (bear_fvg_1h['bottom'] * 0.995 <= entry <= bear_fvg_1h['top'] * 1.01)))
             btc_blocks_long = btc_sentiment and not btc_sentiment.get("allow_longs", True) and symbol != "BTCUSDT"
-            sr_flip_lacks_confluence = is_sr_flip and not (sweep_1h["has_bull_sweep"] or bull_fvg_1h or bull_ob_1h)
 
-            if has_supply_conflict or btc_blocks_long or sr_flip_lacks_confluence:
+            # 2. Strict Overhead Resistance Clearance Cushion (Anti-DOT Rule):
+            # Must have at least 2.0% headroom to nearest daily resistance before entering Long
+            has_resistance_block = dist_to_resistance_pct < 2.0
+
+            # 3. Fresh & Relevant Confluence Check for S/R Flips (Reject Stale/Zombie FVGs):
+            fresh_bull_fvg = bull_fvg_1h and (bull_fvg_1h.get('age_hours', 99) <= 24) and (bull_fvg_1h.get('is_testing') or (abs(entry - bull_fvg_1h['top']) / entry <= 0.025))
+            fresh_bull_ob = bull_ob_1h and (bull_ob_1h.get('age_hours', 99) <= 36) and (bull_ob_1h.get('is_testing') or (abs(entry - bull_ob_1h['top']) / entry <= 0.025))
+            sr_flip_lacks_confluence = is_bull_sr_flip and not (sweep_1h["has_bull_sweep"] or fresh_bull_fvg or fresh_bull_ob)
+
+            # 4. Weekend / Asian Session Low Liquidity Shield:
+            is_weekend = now_utc.weekday() >= 5
+            is_asian = session_info.get("session_name") == "Asian Session"
+            low_liquidity_breakout = (is_weekend or is_asian) and is_bull_sr_flip and (vol_proj_ratio < 1.0)
+
+            if has_supply_conflict or btc_blocks_long or sr_flip_lacks_confluence or has_resistance_block or low_liquidity_breakout:
                 signal_type = "WATCHLIST"
                 tier_badge = "WATCHLIST"
+                if has_resistance_block:
+                    trade_setup = "Long Blocked: Too close to Daily Resistance (<2.0%)"
+                    reasons.append(f"⚠️ Resistance Shield: Price is directly under Daily Resistance ${fmt_price(nearest_resistance)} (Distance: {dist_to_resistance_pct:.2f}% < 2.0%), Long blocked")
                 if sr_flip_lacks_confluence:
                     trade_setup = "Breakout Blocked: Lacks Sweep/FVG Confluence"
-                    reasons.append("⚠️ Breakout Shield: S/R Flip breakout lacks Liquidity Sweep or FVG/OB confluence (No Sweep = No Entry rule)")
+                    reasons.append("⚠️ Breakout Shield: S/R Flip breakout lacks Liquidity Sweep or fresh FVG/OB confluence (No Sweep = No Entry rule)")
                 if has_supply_conflict:
-                    trade_setup = f"Long Blocked: Inside 1H Supply OB"
-                    reasons.append(f"⚠️ SMC Shield: Blocked Long into 1H Supply Zone")
+                    trade_setup = f"Long Blocked: Inside 1H Supply Zone"
+                    reasons.append(f"⚠️ SMC Shield: Blocked Long into 1H Supply Zone / Bearish FVG")
                 if btc_blocks_long:
                     reasons.append(f"⚠️ BTC Shield: BTC trend/momentum unfavorable ({btc_sentiment.get('reason', '') if btc_sentiment else ''}), Long signals paused")
+                if low_liquidity_breakout:
+                    trade_setup = "Breakout Blocked: Low Weekend/Asian Volume"
+                    reasons.append(f"⚠️ Liquidity Shield: Weekend/Asian breakout lacks volume expansion (vol ratio: {vol_proj_ratio:.2f}x < 1.0x)")
             else:
                 signal_type = "BUY / LONG"
                 tier_badge = "⭐ TIER 1: INSTITUTIONAL SMC"
-                trade_setup = "Daily Line Support Bounce + 1H Demand OB" if not is_sr_flip else "Confirmed S/R Flip Breakout & Retest"
+                trade_setup = "Daily Line Support Bounce + 1H Demand OB" if not is_bull_sr_flip else "Confirmed S/R Flip Breakout & Retest"
                 
-                base_support = flip_lvl if is_sr_flip else nearest_support
+                base_support = bull_flip_lvl if is_bull_sr_flip else nearest_support
                 if bull_ob_1h and bull_ob_1h['bottom'] < entry:
                     base_support = min(base_support, bull_ob_1h['bottom'])
                     
@@ -1220,28 +1263,48 @@ def analyze_symbol(symbol, anchored_signal=None, btc_sentiment=None, session_inf
                 if bull_ob_1h:
                     ob_info_str = f"Bullish 1H OB [${fmt_price(bull_ob_1h['bottom'])} - ${fmt_price(bull_ob_1h['top'])}]"
 
-        elif (not ema_bullish) and mtf_4h["bias"] == "BEARISH" and (dist_to_resistance_pct <= 3.5 or is_sr_flip) and (32 <= rsi_daily <= 62):
-            has_demand_conflict = bull_ob_1h and (bull_ob_1h.get('is_testing') or (bull_ob_1h['bottom'] * 0.99 <= entry <= bull_ob_1h['top'] * 1.005))
+        elif (not ema_bullish) and mtf_4h["bias"] == "BEARISH" and (dist_to_resistance_pct <= 3.5 or is_bear_sr_flip) and (32 <= rsi_daily <= 62):
+            # 1. Demand Conflict Shield: Cannot Short directly into 1H Demand OB or Bullish FVG
+            has_demand_conflict = (bull_ob_1h and (bull_ob_1h.get('is_testing') or (bull_ob_1h['bottom'] * 0.99 <= entry <= bull_ob_1h['top'] * 1.005))) or \
+                                  (bull_fvg_1h and (bull_fvg_1h.get('is_testing') or (bull_fvg_1h['bottom'] * 0.99 <= entry <= bull_fvg_1h['top'] * 1.005)))
             btc_blocks_short = btc_sentiment and not btc_sentiment.get("allow_shorts", True) and symbol != "BTCUSDT"
-            sr_flip_lacks_confluence = is_sr_flip and not (sweep_1h["has_bear_sweep"] or bear_fvg_1h or bear_ob_1h)
 
-            if has_demand_conflict or btc_blocks_short or sr_flip_lacks_confluence:
+            # 2. Strict Overhead Support Clearance Cushion (Cannot Short directly into Daily Support):
+            has_support_block = dist_to_support_pct < 2.0
+
+            # 3. Fresh & Relevant Confluence Check for S/R Flips:
+            fresh_bear_fvg = bear_fvg_1h and (bear_fvg_1h.get('age_hours', 99) <= 24) and (bear_fvg_1h.get('is_testing') or (abs(entry - bear_fvg_1h['bottom']) / entry <= 0.025))
+            fresh_bear_ob = bear_ob_1h and (bear_ob_1h.get('age_hours', 99) <= 36) and (bear_ob_1h.get('is_testing') or (abs(entry - bear_ob_1h['bottom']) / entry <= 0.025))
+            sr_flip_lacks_confluence = is_bear_sr_flip and not (sweep_1h["has_bear_sweep"] or fresh_bear_fvg or fresh_bear_ob)
+
+            # 4. Weekend / Asian Session Low Liquidity Shield:
+            is_weekend = now_utc.weekday() >= 5
+            is_asian = session_info.get("session_name") == "Asian Session"
+            low_liquidity_breakdown = (is_weekend or is_asian) and is_bear_sr_flip and (vol_proj_ratio < 1.0)
+
+            if has_demand_conflict or btc_blocks_short or sr_flip_lacks_confluence or has_support_block or low_liquidity_breakdown:
                 signal_type = "WATCHLIST"
                 tier_badge = "WATCHLIST"
+                if has_support_block:
+                    trade_setup = "Short Blocked: Too close to Daily Support (<2.0%)"
+                    reasons.append(f"⚠️ Support Shield: Price is directly on Daily Support ${fmt_price(nearest_support)} (Distance: {dist_to_support_pct:.2f}% < 2.0%), Short blocked")
                 if sr_flip_lacks_confluence:
-                    trade_setup = "Breakout Blocked: Lacks Sweep/FVG Confluence"
-                    reasons.append("⚠️ Breakout Shield: S/R Flip breakout lacks Liquidity Sweep or FVG/OB confluence (No Sweep = No Entry rule)")
+                    trade_setup = "Breakdown Blocked: Lacks Sweep/FVG Confluence"
+                    reasons.append("⚠️ Breakdown Shield: S/R Flip breakdown lacks Liquidity Sweep or fresh FVG/OB confluence (No Sweep = No Entry rule)")
                 if has_demand_conflict:
-                    trade_setup = f"Short Blocked: Inside 1H Demand OB"
-                    reasons.append(f"⚠️ SMC Shield: Blocked Short into 1H Demand Zone")
+                    trade_setup = f"Short Blocked: Inside 1H Demand Zone"
+                    reasons.append(f"⚠️ SMC Shield: Blocked Short into 1H Demand Zone / Bullish FVG")
                 if btc_blocks_short:
                     reasons.append(f"⚠️ BTC Shield: BTC trend/momentum unfavorable ({btc_sentiment.get('reason', '') if btc_sentiment else ''}), Short signals paused")
+                if low_liquidity_breakdown:
+                    trade_setup = "Breakdown Blocked: Low Weekend/Asian Volume"
+                    reasons.append(f"⚠️ Liquidity Shield: Weekend/Asian breakdown lacks volume expansion (vol ratio: {vol_proj_ratio:.2f}x < 1.0x)")
             else:
                 signal_type = "SELL / SHORT"
                 tier_badge = "⭐ TIER 1: INSTITUTIONAL SMC"
-                trade_setup = "Daily Line Resistance Rejection + 1H Supply OB"
+                trade_setup = "Daily Line Resistance Rejection + 1H Supply OB" if not is_bear_sr_flip else "Confirmed S/R Flip Breakdown & Retest"
                 
-                base_res = nearest_resistance
+                base_res = bear_flip_lvl if is_bear_sr_flip else nearest_resistance
                 if bear_ob_1h and bear_ob_1h['top'] > entry:
                     base_res = max(base_res, bear_ob_1h['top'])
                     
@@ -1466,11 +1529,16 @@ def analyze_symbol(symbol, anchored_signal=None, btc_sentiment=None, session_inf
                     trade_setup = f"Short Blocked: Crowded Short Trap (Funding {f_rate:+.4f}%)"
                     reasons.append(f"⚠️ Crowded Shorts Shield: Funding rate is heavily negative ({f_rate:+.4f}% < -0.035%). High risk of short squeeze cascade.")
 
-        # Check for Pending Limit Retest on fresh signals (FVG 25% Retest Depth / High-Precision Entry)
+        # Check for Pending Limit Retest on fresh signals (FVG / OB Retest Depth / High-Precision Entry)
         if signal_type == "BUY / LONG":
             target_limit_price = None
             if bull_fvg_1h and bull_fvg_1h['bottom'] < entry:
-                target_limit_price = bull_fvg_1h['bottom'] + 0.25 * (bull_fvg_1h['top'] - bull_fvg_1h['bottom'])
+                # If price is inside the FVG, target the bottom 10% or FVG bottom for genuine discount
+                if bull_fvg_1h['bottom'] <= entry <= bull_fvg_1h['top']:
+                    fvg_25 = bull_fvg_1h['bottom'] + 0.25 * (bull_fvg_1h['top'] - bull_fvg_1h['bottom'])
+                    target_limit_price = fvg_25 if fvg_25 < entry else bull_fvg_1h['bottom']
+                else:
+                    target_limit_price = bull_fvg_1h['bottom'] + 0.25 * (bull_fvg_1h['top'] - bull_fvg_1h['bottom'])
             elif bull_ob_1h and bull_ob_1h['top'] < entry:
                 target_limit_price = bull_ob_1h['top']
             
@@ -1505,7 +1573,11 @@ def analyze_symbol(symbol, anchored_signal=None, btc_sentiment=None, session_inf
         elif signal_type == "SELL / SHORT":
             target_limit_price = None
             if bear_fvg_1h and bear_fvg_1h['top'] > entry:
-                target_limit_price = bear_fvg_1h['top'] - 0.25 * (bear_fvg_1h['top'] - bear_fvg_1h['bottom'])
+                if bear_fvg_1h['bottom'] <= entry <= bear_fvg_1h['top']:
+                    fvg_25 = bear_fvg_1h['top'] - 0.25 * (bear_fvg_1h['top'] - bear_fvg_1h['bottom'])
+                    target_limit_price = fvg_25 if fvg_25 > entry else bear_fvg_1h['top']
+                else:
+                    target_limit_price = bear_fvg_1h['top'] - 0.25 * (bear_fvg_1h['top'] - bear_fvg_1h['bottom'])
             elif bear_ob_1h and bear_ob_1h['bottom'] > entry:
                 target_limit_price = bear_ob_1h['bottom']
             
