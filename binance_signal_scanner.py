@@ -1142,6 +1142,9 @@ def analyze_symbol(symbol, anchored_signal=None, btc_sentiment=None, session_inf
                 if risk / entry < 0.030:
                     sl = entry * 1.030
                     risk = sl - entry
+                elif risk / entry > 0.055:
+                    sl = entry * 1.055
+                    risk = sl - entry
                 trailing_sl = sl
                 tp1 = entry - (risk * 1.5)
                 tp2 = entry - (risk * 2.0)
@@ -1181,6 +1184,9 @@ def analyze_symbol(symbol, anchored_signal=None, btc_sentiment=None, session_inf
                 risk = entry - sl
                 if risk / entry < 0.030:
                     sl = entry * 0.970
+                    risk = entry - sl
+                elif risk / entry > 0.055:
+                    sl = entry * 0.945
                     risk = entry - sl
                 trailing_sl = sl
                 tp1 = entry + (risk * 1.5)
@@ -1248,6 +1254,9 @@ def analyze_symbol(symbol, anchored_signal=None, btc_sentiment=None, session_inf
                 if risk / entry < 0.030:
                     sl = entry * 0.970
                     risk = entry - sl
+                elif risk / entry > 0.055:
+                    sl = entry * 0.945
+                    risk = entry - sl
                 trailing_sl = sl
                 tp1 = entry + (risk * 1.5)
                 tp2 = entry + (risk * 2.0)
@@ -1314,6 +1323,9 @@ def analyze_symbol(symbol, anchored_signal=None, btc_sentiment=None, session_inf
                 if risk / entry < 0.030:
                     sl = entry * 1.030
                     risk = sl - entry
+                elif risk / entry > 0.055:
+                    sl = entry * 1.055
+                    risk = sl - entry
                 trailing_sl = sl
                 tp1 = entry - (risk * 1.5)
                 tp2 = entry - (risk * 2.0)
@@ -1359,6 +1371,9 @@ def analyze_symbol(symbol, anchored_signal=None, btc_sentiment=None, session_inf
                         if risk / entry < 0.032:
                             sl = entry * 0.968
                             risk = entry - sl
+                        elif risk / entry > 0.055:
+                            sl = entry * 0.945
+                            risk = entry - sl
                         trailing_sl = sl
                         tp1 = entry + (risk * 1.5)
                         tp2 = entry + (risk * 2.0)
@@ -1377,6 +1392,9 @@ def analyze_symbol(symbol, anchored_signal=None, btc_sentiment=None, session_inf
                         risk = sl - entry
                         if risk / entry < 0.032:
                             sl = entry * 1.032
+                            risk = sl - entry
+                        elif risk / entry > 0.055:
+                            sl = entry * 1.055
                             risk = sl - entry
                         trailing_sl = sl
                         tp1 = entry - (risk * 1.5)
@@ -1402,6 +1420,9 @@ def analyze_symbol(symbol, anchored_signal=None, btc_sentiment=None, session_inf
                     if risk / entry < 0.030:
                         sl = entry * 0.970
                         risk = entry - sl
+                    elif risk / entry > 0.055:
+                        sl = entry * 0.945
+                        risk = entry - sl
                     trailing_sl = sl
                     tp1 = entry + (risk * 1.5)
                     tp2 = entry + (risk * 2.0)
@@ -1416,6 +1437,9 @@ def analyze_symbol(symbol, anchored_signal=None, btc_sentiment=None, session_inf
                     risk = sl - entry
                     if risk / entry < 0.030:
                         sl = entry * 1.030
+                        risk = sl - entry
+                    elif risk / entry > 0.055:
+                        sl = entry * 1.055
                         risk = sl - entry
                     trailing_sl = sl
                     tp1 = entry - (risk * 1.5)
@@ -1547,9 +1571,11 @@ def analyze_symbol(symbol, anchored_signal=None, btc_sentiment=None, session_inf
                 if dist_to_ob_pct >= 0.15:
                     l_entry = target_limit_price
                     l_sl = sl
-                    # Enforce Dynamic ATR & Minimum 3.0% Hard Buffer on Limit Setup
+                    # Enforce Dynamic ATR & Minimum 3.0% / Max 5.5% Buffer on Limit Setup
                     if (l_entry - l_sl) / l_entry < 0.030:
                         l_sl = l_entry * 0.970
+                    elif (l_entry - l_sl) / l_entry > 0.055:
+                        l_sl = l_entry * 0.945
                     l_risk = l_entry - l_sl
                     if l_risk > 0 and (l_risk / l_entry) >= 0.015:
                         l_tp1 = l_entry + (l_risk * 1.5)
@@ -1586,9 +1612,11 @@ def analyze_symbol(symbol, anchored_signal=None, btc_sentiment=None, session_inf
                 if dist_to_ob_pct >= 0.15:
                     l_entry = target_limit_price
                     l_sl = sl
-                    # Enforce Dynamic ATR & Minimum 3.0% Hard Buffer on Limit Setup
+                    # Enforce Dynamic ATR & Minimum 3.0% / Max 5.5% Buffer on Limit Setup
                     if (l_sl - l_entry) / l_entry < 0.030:
                         l_sl = l_entry * 1.030
+                    elif (l_sl - l_entry) / l_entry > 0.055:
+                        l_sl = l_entry * 1.055
                     l_risk = l_sl - l_entry
                     if l_risk > 0 and (l_risk / l_entry) >= 0.015:
                         l_tp1 = l_entry - (l_risk * 1.5)
@@ -1609,6 +1637,21 @@ def analyze_symbol(symbol, anchored_signal=None, btc_sentiment=None, session_inf
                             "reward_pct": f"{(((l_entry - l_tp) / l_entry) * 100):.2f}%",
                             "dist_pct": f"{dist_to_ob_pct:.1f}%"
                         }
+
+        # HARD LIQUIDATION FIREWALL:
+        # On 10x leverage, liquidation is ~8.8% away. SL must NEVER exceed 5.5% of entry price.
+        if signal_type in ["BUY / LONG", "SELL / SHORT"] and not anchored_signal and entry > 0:
+            max_sl_pct = 0.055
+            is_long_sig = "BUY" in signal_type or "LONG" in signal_type
+            actual_sl_pct = abs(entry - sl) / entry
+            if actual_sl_pct > max_sl_pct:
+                sl = entry * (1.0 - max_sl_pct) if is_long_sig else entry * (1.0 + max_sl_pct)
+                risk = abs(entry - sl)
+                tp1 = entry + (risk * 1.5) if is_long_sig else entry - (risk * 1.5)
+                tp2 = entry + (risk * 2.0) if is_long_sig else entry - (risk * 2.0)
+                tp = entry + (risk * 3.0) if is_long_sig else entry - (risk * 3.0)
+                trailing_sl = sl
+                reasons.append(f"🛡️ Liquidation Firewall: SL capped to max 5.5% (${fmt_price(sl)}) to safely protect 10x leverage margin")
 
         if choch_15m and choch_5m and not any("15M/5M" in str(r) for r in reasons):
             reasons.append(f"⚡ 15M/5M Sniper Confirmation: {choch_15m['status']} | {choch_5m['status']}")

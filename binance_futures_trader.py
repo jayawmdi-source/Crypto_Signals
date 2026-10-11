@@ -471,7 +471,22 @@ class BinanceFuturesTrader:
             return
 
         open_algos = self.get_open_algo_orders(symbol)
-        has_sl = any(o.get("orderType") == "STOP_MARKET" or o.get("type") == "STOP_MARKET" for o in open_algos)
+        pos = self.get_open_position(symbol)
+        liq_p = float(pos.get("liquidationPrice", 0.0)) if pos else 0.0
+
+        # Audit existing STOP_MARKET orders against liquidation price
+        has_sl = False
+        for o in open_algos:
+            if o.get("orderType") == "STOP_MARKET" or o.get("type") == "STOP_MARKET":
+                curr_trigger = float(o.get("triggerPrice") or o.get("stopPrice") or 0.0)
+                if liq_p > 0 and curr_trigger > 0:
+                    is_danger = (is_long and curr_trigger <= liq_p) or (not is_long and curr_trigger >= liq_p)
+                    if is_danger:
+                        print(f"[🚨] Danger: Existing SL ${curr_trigger} for {symbol} violates liquidation price ${liq_p}! Cancelling invalid SL...")
+                        self.cancel_algo_orders_by_type(symbol, "STOP_MARKET")
+                        has_sl = False
+                        break
+                has_sl = True
         
         exit_side = "SELL" if is_long else "BUY"
         pos_side = ("LONG" if is_long else "SHORT") if self.is_hedge_mode else "BOTH"
@@ -480,8 +495,15 @@ class BinanceFuturesTrader:
             return
 
         if not has_sl and sl_price and sl_price > 0:
+            # Liquidation Barrier Guard: Never allow SL to exceed or equal liquidation price
+            if liq_p > 0:
+                if is_long and sl_price <= liq_p:
+                    sl_price = liq_p * 1.025
+                elif not is_long and sl_price >= liq_p:
+                    sl_price = liq_p * 0.970
+
             sl_formatted = self.round_price(sl_price, rules["tick_size"], rules["tick_decimals"])
-            print(f"[🛡️] Auto-Shield: Missing STOP_MARKET detected for {symbol}! Placing @ ${sl_formatted}...")
+            print(f"[🛡️] Auto-Shield: Placing safe STOP_MARKET for {symbol} @ ${sl_formatted}...")
             sl_res = self._place_conditional_order(symbol, exit_side, "STOP_MARKET", sl_formatted, pos_side, qty)
             if sl_res.get("success"):
                 print(f"[✅] Auto-Shield: STOP_MARKET placed for {symbol} (Order ID: {sl_res.get('order_id')})")
@@ -601,6 +623,20 @@ class BinanceFuturesTrader:
             else:
                 sl_price = entry_price + min_stop_dist
                 tp_price = entry_price - (min_stop_dist * 3.0)
+
+        # 2. Hard Liquidation Firewall (Never let SL reach or exceed liquidation price):
+        # On 10x leverage, liquidation occurs at ~8.8% from entry.
+        # Max allowed SL distance is strictly capped at 5.5% (guaranteeing a 3.3% buffer before liquidation).
+        max_stop_dist = entry_price * min(0.055, 0.80 / max(self.leverage, 1))
+        if stop_dist > max_stop_dist:
+            print(f"[🛡️] Liquidation Firewall: SL distance {stop_dist/entry_price*100:.2f}% exceeds safe limit! Capping SL to {max_stop_dist/entry_price*100:.2f}% (well before liquidation).")
+            stop_dist = max_stop_dist
+            if side == "BUY" or pos_side == "LONG":
+                sl_price = entry_price - max_stop_dist
+                tp_price = entry_price + (max_stop_dist * 3.0)
+            else:
+                sl_price = entry_price + max_stop_dist
+                tp_price = entry_price - (max_stop_dist * 3.0)
 
         if stop_dist > 0:
             raw_qty = risk_usdt / stop_dist
