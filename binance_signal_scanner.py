@@ -1666,8 +1666,10 @@ def check_and_resolve_open_trades(news_shield=None):
                 # Strictly evaluate REALIZED_PNL (commissions and funding fees are not trade losses)
                 if inc.get("incomeType") == "REALIZED_PNL":
                     inc_time = int(inc.get("time", 0))
-                    # Exclude mistaken manual cleanup trades from earlier today (2026-10-10)
-                    if today_utc == "2026-10-10" and (inc_time < 1791632400000 or inc.get("symbol") in {'NEARUSDT', 'ADAUSDT'}):
+                    # Exclude manual rebalances/cleanups and commodity de-risking from circuit breaker count
+                    if inc.get("symbol") in {'NEARUSDT', 'ADAUSDT', 'PAXGUSDT', 'XAUTUSDT'}:
+                        continue
+                    if today_utc == "2026-10-10" and inc_time < 1791632400000:
                         continue
                     if inc_time >= start_of_day_ts:
                         sym = inc.get("symbol")
@@ -2316,9 +2318,9 @@ def get_top_pairs(limit=None):
 
         if resp.status_code == 200:
             data = resp.json()
-            real_b_cryptos = {'BNBUSDT', 'DGBUSDT', 'TRBUSDT', 'CKBUSDT', 'SHIBUSDT', 'MOBUSDT', 'PHBUSDT', 'VIBUSDT', 'AMBUSDT', 'ARBUSDT', 'BBUSDT', 'YBUSDT', 'STXUSDT'}
+            real_b_cryptos = {'BNBUSDT', 'DGBUSDT', 'TRBUSDT', 'CKBUSDT', 'SHIBUSDT', 'MOBUSDT', 'PHBUSDT', 'VIBUSDT', 'AMBUSDT', 'ARBUSDT', 'BBUSDT', 'YBUSDT', 'STXUSDT', 'BUSDT'}
             stables_and_junk = {'USDCUSDT', 'FDUSDUSDT', 'TUSDUSDT', 'EURUSDT', 'USDPUSDT', 'AEURUSDT', 'USD1USDT', 'RLUSDUSDT', 'XUSDUSDT', 'USDSBUSDT', 'BFDUSDT', 'EURIUSDT', 'USDEUSDT'}
-            non_crypto_exclusions = {'NATGASUSDT', 'XAUUSDT', 'XAGUSDT', 'CLUSDT', 'SPCXUSDT', 'SOXLUSDT', 'SOXSUSDT', 'INTCUSDT', 'SAMSUNGUSDT', 'MUUSDT', 'SNDKUSDT', 'SKHYNIXUSDT', 'KORUUSDT', 'BZUSDT', 'CRCLUSDT', 'SNXXUSDT'}
+            non_crypto_exclusions = {'NATGASUSDT', 'XAUUSDT', 'XAGUSDT', 'CLUSDT', 'SPCXUSDT', 'SOXLUSDT', 'SOXSUSDT', 'INTCUSDT', 'SAMSUNGUSDT', 'MUUSDT', 'SNDKUSDT', 'SKHYNIXUSDT', 'KORUUSDT', 'BZUSDT', 'CRCLUSDT', 'SNXXUSDT', 'PAXGUSDT', 'XAUTUSDT'}
             
             # Fetch official Binance exchangeInfo to strictly verify underlyingType == 'COIN' (100% Pure Crypto)
             pure_crypto_set = set()
