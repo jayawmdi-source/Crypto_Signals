@@ -276,7 +276,7 @@ def send_telegram_execution_alert(exec_res, sig, is_retest=False):
     qty = exec_res.get("qty", "-")
 
     risk_label = "5% Defensive Allocation 🛡️" if (exec_res.get("is_defensive") or sig.get("is_defensive")) else "10% Risk Allocation"
-    header_title = "BINANCE LIVE RETEST TRADE EXECUTED! 🎯" if is_retest else "BINANCE LIVE TRADE EXECUTED!"
+    header_title = "BINANCE LIVE RETEST ORDER FILLED & EXECUTED! 🎯" if is_retest else "BINANCE LIVE ORDER FILLED & EXECUTED!"
     msg = (
         f"🚨 <b>{header_title}</b> {icon}\n"
         f"━━━━━━━━━━━━━━━━━━━━\n"
