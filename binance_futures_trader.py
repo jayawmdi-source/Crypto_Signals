@@ -735,6 +735,7 @@ class BinanceFuturesTrader:
                 print(f"[!] Note: Could not place TAKE_PROFIT_MARKET for {symbol}.")
 
             execution_summary = {
+                "executed": True,
                 "symbol": symbol,
                 "side": side,
                 "qty": order_qty,

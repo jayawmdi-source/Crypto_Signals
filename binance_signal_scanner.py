@@ -2386,7 +2386,7 @@ def record_new_signals_to_history(actionable_signals, history_data, open_symbols
                     risk_val = float(os.environ.get("BINANCE_RISK_PCT_PER_TRADE", 3.0))
                     act["risk_pct_override"] = (risk_val / 2.0) if cb.get("is_defensive") else risk_val
                     exec_res = auto_trader.execute_signal(act)
-                    if exec_res and exec_res.get("executed"):
+                    if exec_res and (exec_res.get("executed") or exec_res.get("status") == "FILLED" or exec_res.get("order_id")):
                         new_item["binance_order_id"] = exec_res.get("order_id")
                         new_item["binance_sl_order_id"] = exec_res.get("sl_order_id")
                         new_item["executed_live"] = True
