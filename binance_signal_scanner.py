@@ -12,11 +12,11 @@ from concurrent.futures import ThreadPoolExecutor
 sys.stdout.reconfigure(encoding='utf-8')
 
 # Global Constants & Risk Limits (Pro-Trader Hybrid Adaptive Model)
-MAX_ACTIVE_POSITIONS = 4          # Portfolio Heat Governor: Max 4 concurrent active trades
-CIRCUIT_COOLDOWN_LOSSES = 2       # Triggers 4-Hour Volatility Cooldown after 2 losses
+MAX_ACTIVE_POSITIONS = int(os.environ.get("BINANCE_MAX_POSITIONS", 5))          # Portfolio Heat Governor: Max 5 concurrent active trades
+CIRCUIT_COOLDOWN_LOSSES = int(os.environ.get("CIRCUIT_COOLDOWN_LOSSES", 3))   # Triggers 4-Hour Volatility Cooldown after 3 losses
 CIRCUIT_COOLDOWN_HOURS = 4        # 4 Hours market calming quarantine
-MAX_DAILY_HARD_STOP_LOSSES = 3    # Absolute Daily Hard Stop (Full stop until 00:00 UTC)
-MAX_DAILY_LOSSES = 2              # Backward-compatible reference
+MAX_DAILY_HARD_STOP_LOSSES = int(os.environ.get("MAX_DAILY_HARD_STOP_LOSSES", 4)) # Absolute Daily Hard Stop (Full stop after 4 losses until 00:00 UTC)
+MAX_DAILY_LOSSES = 3              # Backward-compatible reference
 LIMIT_EXPIRY_HOURS = 24           # Pending limit orders expire if unfilled after 24h
 FEE_BUFFER_PCT = 0.002            # 0.2% round-trip exchange fee buffer for True Break-Even
 
@@ -2276,8 +2276,8 @@ def record_new_signals_to_history(actionable_signals, history_data, open_symbols
                 act["tier_badge"] = f"⏳ 4H COOLDOWN ({rem_m}m left)"
                 act["reasons"].append(f"Pro-Trader Circuit Breaker: 4-Hour Volatility Cooldown active ({rem_m}m remaining). Resumes in Defensive Mode.")
             else:
-                act["tier_badge"] = "🛑 DAILY HARD STOP (3 Losses)"
-                act["reasons"].append("Daily Drawdown Hard Stop: Max 3 daily losses hit. Trading stopped until 00:00 UTC to protect capital.")
+                act["tier_badge"] = f"🛑 DAILY HARD STOP ({MAX_DAILY_HARD_STOP_LOSSES} Losses)"
+                act["reasons"].append(f"Daily Drawdown Hard Stop: Max {MAX_DAILY_HARD_STOP_LOSSES} daily losses hit. Trading stopped until 00:00 UTC to protect capital.")
             continue
 
         if circuit_breaker.get("is_defensive"):
@@ -2285,7 +2285,7 @@ def record_new_signals_to_history(actionable_signals, history_data, open_symbols
             act["risk_pct_override"] = 5.0
             act["tier_badge"] = "🛡️ DEFENSIVE RE-ENTRY (5% Risk)"
 
-        # 2. Check Portfolio Heat Governor (Max 4 active trades)
+        # 2. Check Portfolio Heat Governor (Max active trades)
         if active_positions_count >= MAX_ACTIVE_POSITIONS:
             act["signal"] = "WATCHLIST"
             act["tier_badge"] = "🔥 PORTFOLIO CAP REACHED"
@@ -2617,7 +2617,7 @@ def scan_all_pairs():
     print(f" Active Session: {session_info['badge']} ({session_info['desc']})")
     cb_txt = "🟢 NORMAL SHIELD"
     if circuit_breaker.get("status") == "HARD_STOP":
-        cb_txt = "🛑 HARD STOP (Max 3 Losses Hit - Paused until 00:00 UTC)"
+        cb_txt = f"🛑 HARD STOP (Max {MAX_DAILY_HARD_STOP_LOSSES} Losses Hit - Paused until 00:00 UTC)"
     elif circuit_breaker.get("status") == "COOLDOWN":
         cb_txt = f"⏳ 4H COOLDOWN ({circuit_breaker.get('remaining_cooldown_mins', 0)}m remaining)"
     elif circuit_breaker.get("is_defensive"):
@@ -2776,11 +2776,11 @@ def generate_html_dashboard(data, output_path):
             rem_m = circuit_breaker.get("remaining_cooldown_mins", 0)
             cb_html = f'<span class="badge bg-warning text-dark"><i class="fa-solid fa-hourglass-half me-1"></i>⏳ 4H COOLDOWN ({rem_m}m left)</span>'
         else:
-            cb_html = f'<span class="badge bg-danger text-white"><i class="fa-solid fa-hand me-1"></i>🛑 HARD STOP ACTIVE ({cb_losses}/3 Losses)</span>'
+            cb_html = f'<span class="badge bg-danger text-white"><i class="fa-solid fa-hand me-1"></i>🛑 HARD STOP ACTIVE ({cb_losses}/{MAX_DAILY_HARD_STOP_LOSSES} Losses)</span>'
     elif circuit_breaker.get("is_defensive"):
         cb_html = f'<span class="badge bg-info text-dark"><i class="fa-solid fa-shield-halved me-1"></i>🛡️ DEFENSIVE RESUME (5% Risk)</span>'
     else:
-        cb_html = f'<span class="badge bg-success bg-opacity-25 text-success border border-success"><i class="fa-solid fa-shield-halved me-1"></i>ADAPTIVE SHIELD ACTIVE ({cb_losses}/3)</span>'
+        cb_html = f'<span class="badge bg-success bg-opacity-25 text-success border border-success"><i class="fa-solid fa-shield-halved me-1"></i>ADAPTIVE SHIELD ACTIVE ({cb_losses}/{MAX_DAILY_HARD_STOP_LOSSES})</span>'
 
     news_shield = data.get("news_shield", {})
     upcoming_news = data.get("upcoming_news", [])

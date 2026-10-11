@@ -511,10 +511,11 @@ class BinanceFuturesTrader:
 
         symbol = sig.get("symbol")
         
-        # HARD RISK GOVERNOR: Absolute Maximum 4 concurrent active positions on Binance Futures
+        # HARD RISK GOVERNOR: Absolute Maximum 5 concurrent active positions on Binance Futures
+        max_active = int(os.environ.get("BINANCE_MAX_POSITIONS", 5))
         open_positions = self.get_open_positions_detail()
-        if open_positions is not None and len(open_positions) >= 4:
-            print(f"[!] Auto-Trader Risk Shield: Maximum 4 positions cap reached ({len(open_positions)}/4). Skipping execution for {symbol}.")
+        if open_positions is not None and len(open_positions) >= max_active:
+            print(f"[!] Auto-Trader Risk Shield: Maximum {max_active} positions cap reached ({len(open_positions)}/{max_active}). Skipping execution for {symbol}.")
             return None
 
         sig_type = str(sig.get("type") or sig.get("signal") or "").upper()
