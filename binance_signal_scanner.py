@@ -1390,59 +1390,63 @@ def analyze_symbol(symbol, anchored_signal=None, btc_sentiment=None, session_inf
             utc_now = datetime.now(timezone.utc)
             today_utc_00 = int(utc_now.replace(hour=0, minute=0, second=0, microsecond=0).timestamp() * 1000)
             today_utc_07 = int(utc_now.replace(hour=7, minute=0, second=0, microsecond=0).timestamp() * 1000)
-            
-            if klines_1h and len(klines_1h) >= 12:
+
+            # Judas sweeps are only valid during active London / early NY overlap sessions (07:00 to 17:00 UTC)
+            is_valid_judas_window = 7 <= utc_now.hour <= 17
+
+            if is_valid_judas_window and klines_1h and len(klines_1h) >= 12:
                 asia_bars = [k for k in klines_1h if today_utc_00 <= k[0] < today_utc_07]
                 after_bars = [k for k in klines_1h if k[0] >= today_utc_07]
-                if len(asia_bars) >= 4 and after_bars and utc_now.hour >= 7:
+                if len(asia_bars) >= 4 and len(after_bars) >= 1:
                     a_high = max(float(k[2]) for k in asia_bars)
                     a_low = min(float(k[3]) for k in asia_bars)
-                    low_after = min(float(k[3]) for k in after_bars)
-                    high_after = max(float(k[2]) for k in after_bars)
-                    
-                    # Bullish Judas Sweep: Swept Asian Low & price reclaimed above Asian Low
-                    if low_after < a_low and entry > a_low:
-                        signal_type = "BUY / LONG"
-                        tier_badge = "⚡ ASIAN RANGE SWEEP"
-                        trade_setup = "London Judas Sweep of Asian Low (Liquidity Grab Reversal)"
-                        choch_badge = "Asian Low Swept 🟢"
-                        is_asian_sweep_setup = True
-                        sl = low_after - (2.8 * atr_1h)
+
+                    # Freshness Guard: Sweep must have occurred in the last 2 completed bars or live bar (max 2 hours ago)
+                    recent_after_bars = after_bars[-3:]
+                    recent_sweep_low = min(float(k[3]) for k in recent_after_bars)
+                    recent_sweep_high = max(float(k[2]) for k in recent_after_bars)
+
+                    # Bullish Judas Sweep: Freshly swept Asian Low & reclaimed above Asian Low, without chasing > 1.8%
+                    dist_from_sweep_low_pct = ((entry - recent_sweep_low) / recent_sweep_low) * 100 if recent_sweep_low > 0 else 99.0
+                    if recent_sweep_low < a_low and entry > a_low and dist_from_sweep_low_pct <= 1.8:
+                        sl = recent_sweep_low - (2.8 * atr_1h)
                         risk = entry - sl
-                        if risk / entry < 0.032:
-                            sl = entry * 0.968
+                        if risk / entry < 0.030:
+                            sl = entry * 0.970
                             risk = entry - sl
-                        elif risk / entry > 0.055:
-                            sl = entry * 0.945
-                            risk = entry - sl
-                        trailing_sl = sl
-                        tp1 = entry + (risk * 1.5)
-                        tp2 = entry + (risk * 2.0)
-                        tp = entry + (risk * 3.0)
-                        reasons.append(f"⚡ Asian Range Sweep: Swept Asian Low (${fmt_price(a_low)}) to ${fmt_price(low_after)}")
-                        reasons.append("⚡ Institutional Reclaim: Price surged back above Asian Low structure")
-                    
-                    # Bearish Judas Sweep: Swept Asian High & price rejected below Asian High
-                    elif high_after > a_high and entry < a_high:
-                        signal_type = "SELL / SHORT"
-                        tier_badge = "⚡ ASIAN RANGE SWEEP"
-                        trade_setup = "London Judas Sweep of Asian High (Liquidity Grab Reversal)"
-                        choch_badge = "Asian High Swept 🔴"
-                        is_asian_sweep_setup = True
-                        sl = high_after + (2.8 * atr_1h)
+                        if (risk / entry) <= 0.055:
+                            signal_type = "BUY / LONG"
+                            tier_badge = "⚡ ASIAN RANGE SWEEP"
+                            trade_setup = "London Judas Sweep of Asian Low (Liquidity Grab Reversal)"
+                            choch_badge = "Asian Low Swept 🟢"
+                            is_asian_sweep_setup = True
+                            trailing_sl = sl
+                            tp1 = entry + (risk * 1.5)
+                            tp2 = entry + (risk * 2.0)
+                            tp = entry + (risk * 3.0)
+                            reasons.append(f"⚡ Asian Range Sweep: Freshly swept Asian Low (${fmt_price(a_low)}) to ${fmt_price(recent_sweep_low)}")
+                            reasons.append(f"⚡ Institutional Reclaim: Price reclaimed above Asian Low structure (Sweep Offset: {dist_from_sweep_low_pct:.1f}% <= 1.8%)")
+
+                    # Bearish Judas Sweep: Freshly swept Asian High & rejected below Asian High, without chasing > 1.8%
+                    dist_from_sweep_high_pct = ((recent_sweep_high - entry) / recent_sweep_high) * 100 if recent_sweep_high > 0 else 99.0
+                    if recent_sweep_high > a_high and entry < a_high and dist_from_sweep_high_pct <= 1.8:
+                        sl = recent_sweep_high + (2.8 * atr_1h)
                         risk = sl - entry
-                        if risk / entry < 0.032:
-                            sl = entry * 1.032
+                        if risk / entry < 0.030:
+                            sl = entry * 1.030
                             risk = sl - entry
-                        elif risk / entry > 0.055:
-                            sl = entry * 1.055
-                            risk = sl - entry
-                        trailing_sl = sl
-                        tp1 = entry - (risk * 1.5)
-                        tp2 = entry - (risk * 2.0)
-                        tp = entry - (risk * 3.0)
-                        reasons.append(f"⚡ Asian Range Sweep: Swept Asian High (${fmt_price(a_high)}) to ${fmt_price(high_after)}")
-                        reasons.append("⚡ Institutional Rejection: Price closed back below Asian High structure")
+                        if (risk / entry) <= 0.055:
+                            signal_type = "SELL / SHORT"
+                            tier_badge = "⚡ ASIAN RANGE SWEEP"
+                            trade_setup = "London Judas Sweep of Asian High (Liquidity Grab Reversal)"
+                            choch_badge = "Asian High Swept 🔴"
+                            is_asian_sweep_setup = True
+                            trailing_sl = sl
+                            tp1 = entry - (risk * 1.5)
+                            tp2 = entry - (risk * 2.0)
+                            tp = entry - (risk * 3.0)
+                            reasons.append(f"⚡ Asian Range Sweep: Freshly swept Asian High (${fmt_price(a_high)}) to ${fmt_price(recent_sweep_high)}")
+                            reasons.append(f"⚡ Institutional Rejection: Price closed back below Asian High structure (Sweep Offset: {dist_from_sweep_high_pct:.1f}% <= 1.8%)")
 
             # -----------------------------------------------------------------
             # TIER 4: RELATIVE STRENGTH (RS) / RELATIVE WEAKNESS (RW) ALPHA
@@ -1525,21 +1529,36 @@ def analyze_symbol(symbol, anchored_signal=None, btc_sentiment=None, session_inf
             # 2. Smart BTC Macro Correlation Guard
             if btc_sentiment:
                 is_long_sig = "BUY" in signal_type or "LONG" in signal_type
-                is_decoupled = tier_badge in ["💎 RELATIVE STRENGTH ALPHA", "💎 RELATIVE WEAKNESS ALPHA", "⚡ ASIAN RANGE SWEEP"]
-                if is_long_sig and (btc_sentiment.get("is_dumping") or "BEARISH" in str(btc_sentiment.get("status", ""))):
-                    if is_decoupled:
-                        reasons.append(f"💎 RS Alpha Bypass: Leading setup decoupled from BTC ({btc_sentiment.get('reason')}). Signal permitted.")
-                    else:
+                is_dumping = btc_sentiment.get("is_dumping", False) or "DUMPING" in str(btc_sentiment.get("status", ""))
+                is_pumping = btc_sentiment.get("is_pumping", False) or "PUMP" in str(btc_sentiment.get("status", ""))
+                is_decoupled = tier_badge in ["💎 RELATIVE STRENGTH ALPHA", "💎 RELATIVE WEAKNESS ALPHA"]
+
+                if is_long_sig:
+                    if is_dumping:
                         signal_type = "WATCHLIST"
                         tier_badge = "🛡️ BTC DUMP WATCHLIST"
-                        reasons.append(f"⚠️ BTC Macro Shield: Bitcoin is Bearish/Dumping ({btc_sentiment.get('reason')}). Long held in Watchlist.")
-                elif not is_long_sig and (btc_sentiment.get("is_pumping") or "BULLISH" in str(btc_sentiment.get("status", ""))):
-                    if is_decoupled:
-                        reasons.append(f"💎 RW Alpha Bypass: Lagging setup decoupled from BTC ({btc_sentiment.get('reason')}). Signal permitted.")
-                    else:
+                        trade_setup = "Long Blocked: BTC Actively Dumping"
+                        reasons.append(f"⚠️ BTC Macro Shield: Bitcoin is actively dumping ({btc_sentiment.get('reason')}). All altcoin Longs blocked.")
+                    elif "BEARISH" in str(btc_sentiment.get("status", "")):
+                        if is_decoupled:
+                            reasons.append(f"💎 RS Alpha Bypass: Leading setup decoupled from BTC ({btc_sentiment.get('reason')}). Signal permitted.")
+                        else:
+                            signal_type = "WATCHLIST"
+                            tier_badge = "🛡️ BTC BEARISH WATCHLIST"
+                            reasons.append(f"⚠️ BTC Macro Shield: Bitcoin is Bearish ({btc_sentiment.get('reason')}). Long held in Watchlist.")
+                elif not is_long_sig:
+                    if is_pumping:
                         signal_type = "WATCHLIST"
                         tier_badge = "🛡️ BTC PUMP WATCHLIST"
-                        reasons.append(f"⚠️ BTC Pump Shield: Bitcoin is Bullish/Pumping ({btc_sentiment.get('reason')}). Short held in Watchlist.")
+                        trade_setup = "Short Blocked: BTC Parabolic Pump"
+                        reasons.append(f"⚠️ BTC Macro Shield: Bitcoin is aggressively pumping ({btc_sentiment.get('reason')}). All altcoin Shorts blocked.")
+                    elif "BULLISH" in str(btc_sentiment.get("status", "")):
+                        if is_decoupled:
+                            reasons.append(f"💎 RW Alpha Bypass: Lagging setup decoupled from BTC ({btc_sentiment.get('reason')}). Signal permitted.")
+                        else:
+                            signal_type = "WATCHLIST"
+                            tier_badge = "🛡️ BTC BULLISH WATCHLIST"
+                            reasons.append(f"⚠️ BTC Pump Shield: Bitcoin is Bullish ({btc_sentiment.get('reason')}). Short held in Watchlist.")
 
             # 3. Dynamic Volume Expansion Filter (Completed Candle + Pace-Adjusted Live Candle)
             volumes_1h = [float(k[5]) for k in klines_1h]
@@ -1700,19 +1719,16 @@ def analyze_symbol(symbol, anchored_signal=None, btc_sentiment=None, session_inf
                         }
 
         # HARD LIQUIDATION FIREWALL:
-        # On 10x leverage, liquidation is ~8.8% away. SL must NEVER exceed 5.5% of entry price.
+        # On 10x leverage, liquidation is ~8.8% away. If natural structural stop loss exceeds 5.5%,
+        # DISQUALIFY the trade rather than clamping the stop loss into the liquidity hunt zone!
         if signal_type in ["BUY / LONG", "SELL / SHORT"] and not anchored_signal and entry > 0:
             max_sl_pct = 0.055
-            is_long_sig = "BUY" in signal_type or "LONG" in signal_type
             actual_sl_pct = abs(entry - sl) / entry
             if actual_sl_pct > max_sl_pct:
-                sl = entry * (1.0 - max_sl_pct) if is_long_sig else entry * (1.0 + max_sl_pct)
-                risk = abs(entry - sl)
-                tp1 = entry + (risk * 1.5) if is_long_sig else entry - (risk * 1.5)
-                tp2 = entry + (risk * 2.0) if is_long_sig else entry - (risk * 2.0)
-                tp = entry + (risk * 3.0) if is_long_sig else entry - (risk * 3.0)
-                trailing_sl = sl
-                reasons.append(f"🛡️ Liquidation Firewall: SL capped to max 5.5% (${fmt_price(sl)}) to safely protect 10x leverage margin")
+                signal_type = "WATCHLIST"
+                tier_badge = "🛡️ RISK GEOMETRY WATCHLIST"
+                trade_setup = f"Trade Disqualified: Structural Stop Loss too wide ({actual_sl_pct*100:.1f}% > 5.5%)"
+                reasons.append(f"⚠️ Risk Geometry Shield: Safe structural stop requires {actual_sl_pct*100:.1f}% risk (>5.5% max limit). Trade disqualified to prevent premature wick stop-out.")
 
         if choch_15m and choch_5m and not any("15M/5M" in str(r) for r in reasons):
             reasons.append(f"⚡ 15M/5M Sniper Confirmation: {choch_15m['status']} | {choch_5m['status']}")
@@ -2577,9 +2593,9 @@ def get_btc_macro_sentiment():
     
     change_3h = ((current_p - closes[-4]) / closes[-4]) * 100 if len(closes) >= 4 else 0.0
     
-    # Realistic market crash/dump thresholds (avoids false alarm freezes on micro-fluctuations):
-    is_dumping = change_3h < -1.8 or (current_p < ema50 and rsi < 38)
-    is_pumping = change_3h > 2.5 or (current_p > ema50 and rsi > 75)
+    # Responsive market crash/dump thresholds:
+    is_dumping = change_3h < -1.2 or (current_p < ema20 and rsi < 42)
+    is_pumping = change_3h > 1.5 or (current_p > ema20 and rsi > 66)
     
     btc_bullish_trend = (current_p >= ema50) or (ema20 >= ema50) or (rsi >= 46)
     btc_bearish_trend = (current_p <= ema50) or (ema20 <= ema50) or (rsi <= 54)
