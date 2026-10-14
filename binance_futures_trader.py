@@ -540,6 +540,12 @@ class BinanceFuturesTrader:
             print(f"[!] Auto-Trader Risk Shield: Maximum {max_active} positions cap reached ({len(open_positions)}/{max_active}). Skipping execution for {symbol}.")
             return None
 
+        # HARD TIER 1 INSTITUTIONAL A+ CONFLUENCE GATEKEEPER
+        tier_badge_str = str(sig.get("tier_badge", "")).upper()
+        if "TIER 1" not in tier_badge_str or "INSTITUTIONAL SMC" not in tier_badge_str:
+            print(f"[🛡️] Auto-Trader Quality Gate: Blocked live execution for {symbol} - Tier '{sig.get('tier_badge')}' does not meet strict A+ Tier 1 Institutional SMC criteria.")
+            return None
+
         sig_type = str(sig.get("type") or sig.get("signal") or "").upper()
         is_long = "BUY" in sig_type or "LONG" in sig_type
         side = "BUY" if is_long else "SELL"

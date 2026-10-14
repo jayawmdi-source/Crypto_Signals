@@ -858,19 +858,14 @@ def verify_retest_confirmation(symbol, sig_type, l_entry, sl_price):
         
         if is_long:
             lower_wick = min(o, cl) - l
-            if (lower_wick / rng) >= 0.25 or (cl >= o and cl > sl_price):
+            if (lower_wick / rng) >= 0.25 or (cl > o and (cl - o) / rng >= 0.35):
                 return True, "Demand rejection wick / bullish candle confirmed"
         else:
             upper_wick = h - max(o, cl)
-            if (upper_wick / rng) >= 0.25 or (cl <= o and cl < sl_price):
+            if (upper_wick / rng) >= 0.25 or (cl < o and (o - cl) / rng >= 0.35):
                 return True, "Supply rejection wick / bearish candle confirmed"
 
-    if is_long and curr_price > sl_price:
-        return True, "Price holding above SL in Demand Zone"
-    if not is_long and curr_price < sl_price:
-        return True, "Price holding below SL in Supply Zone"
-
-    return False, "Awaiting clearer reaction"
+    return False, "Awaiting structural rejection wick or 15M/5M CHoCH confirmation"
 
 def get_futures_oi_and_funding(symbol):
     funding_pct = 0.0
@@ -1252,20 +1247,28 @@ def analyze_symbol(symbol, anchored_signal=None, btc_sentiment=None, session_inf
             # Must have at least 2.0% headroom to nearest daily resistance before entering Long
             has_resistance_block = dist_to_resistance_pct < 2.0
 
-            # 3. Fresh & Relevant Confluence Check for S/R Flips (Reject Stale/Zombie FVGs):
+            # 3. Institutional SMC Footprint Requirement (No Footprint = No Entry):
+            # A true Tier 1 SMC setup MUST have at least ONE verified institutional footprint:
+            # 1H Liquidity Sweep, 1H Demand Order Block, 1H Bullish FVG, or verified S/R Flip!
+            has_institutional_footprint = bool(sweep_1h["has_bull_sweep"] or bull_fvg_1h or bull_ob_1h or is_bull_sr_flip)
+
+            # 4. Fresh & Relevant Confluence Check for S/R Flips (Reject Stale/Zombie FVGs):
             fresh_bull_fvg = bull_fvg_1h and (bull_fvg_1h.get('age_hours', 99) <= 24) and (bull_fvg_1h.get('is_testing') or (abs(entry - bull_fvg_1h['top']) / entry <= 0.025))
             fresh_bull_ob = bull_ob_1h and (bull_ob_1h.get('age_hours', 99) <= 36) and (bull_ob_1h.get('is_testing') or (abs(entry - bull_ob_1h['top']) / entry <= 0.025))
             sr_flip_lacks_confluence = is_bull_sr_flip and not (sweep_1h["has_bull_sweep"] or fresh_bull_fvg or fresh_bull_ob)
 
-            # 4. Weekend / Asian Session Low Liquidity Shield:
+            # 5. Weekend / Asian Session Low Liquidity Shield:
             is_weekend = now_utc.weekday() >= 5
             is_asian = session_info.get("session_name") == "Asian Session"
             low_liquidity_breakout = (is_weekend or is_asian) and is_bull_sr_flip and (vol_proj_ratio < 1.0)
 
-            if has_supply_conflict or btc_blocks_long or sr_flip_lacks_confluence or has_resistance_block or low_liquidity_breakout or is_post_pump_exhaustion:
+            if not has_institutional_footprint or has_supply_conflict or btc_blocks_long or sr_flip_lacks_confluence or has_resistance_block or low_liquidity_breakout or is_post_pump_exhaustion:
                 signal_type = "WATCHLIST"
                 tier_badge = "WATCHLIST"
-                if is_post_pump_exhaustion:
+                if not has_institutional_footprint:
+                    trade_setup = "Long Blocked: Lacks Institutional Footprint (No Sweep, No FVG, No OB)"
+                    reasons.append("⚠️ SMC Confluence Shield: Price is near Daily Support but lacks 1H Liquidity Sweep, OB, or FVG footprint.")
+                elif is_post_pump_exhaustion:
                     trade_setup = "Long Blocked: Post-Pump Exhaustion Distribution"
                     reasons.append(f"⚠️ Exhaustion Shield: Coin pumped +{pump_gain_pct:.1f}% recently and is bleeding in post-pump distribution (-{drop_from_peak_pct:.1f}% from peak). Long blocked")
                 elif has_resistance_block:
@@ -1322,20 +1325,28 @@ def analyze_symbol(symbol, anchored_signal=None, btc_sentiment=None, session_inf
             # 2. Strict Overhead Support Clearance Cushion (Cannot Short directly into Daily Support):
             has_support_block = dist_to_support_pct < 2.0
 
-            # 3. Fresh & Relevant Confluence Check for S/R Flips:
+            # 3. Institutional SMC Footprint Requirement (No Footprint = No Entry):
+            # A true Tier 1 SMC setup MUST have at least ONE verified institutional footprint:
+            # 1H Liquidity Sweep, 1H Supply Order Block, 1H Bearish FVG, or verified S/R Flip!
+            has_institutional_footprint = bool(sweep_1h["has_bear_sweep"] or bear_fvg_1h or bear_ob_1h or is_bear_sr_flip)
+
+            # 4. Fresh & Relevant Confluence Check for S/R Flips:
             fresh_bear_fvg = bear_fvg_1h and (bear_fvg_1h.get('age_hours', 99) <= 24) and (bear_fvg_1h.get('is_testing') or (abs(entry - bear_fvg_1h['bottom']) / entry <= 0.025))
             fresh_bear_ob = bear_ob_1h and (bear_ob_1h.get('age_hours', 99) <= 36) and (bear_ob_1h.get('is_testing') or (abs(entry - bear_ob_1h['bottom']) / entry <= 0.025))
             sr_flip_lacks_confluence = is_bear_sr_flip and not (sweep_1h["has_bear_sweep"] or fresh_bear_fvg or fresh_bear_ob)
 
-            # 4. Weekend / Asian Session Low Liquidity Shield:
+            # 5. Weekend / Asian Session Low Liquidity Shield:
             is_weekend = now_utc.weekday() >= 5
             is_asian = session_info.get("session_name") == "Asian Session"
             low_liquidity_breakdown = (is_weekend or is_asian) and is_bear_sr_flip and (vol_proj_ratio < 1.0)
 
-            if has_demand_conflict or btc_blocks_short or sr_flip_lacks_confluence or has_support_block or low_liquidity_breakdown:
+            if not has_institutional_footprint or has_demand_conflict or btc_blocks_short or sr_flip_lacks_confluence or has_support_block or low_liquidity_breakdown:
                 signal_type = "WATCHLIST"
                 tier_badge = "WATCHLIST"
-                if has_support_block:
+                if not has_institutional_footprint:
+                    trade_setup = "Short Blocked: Lacks Institutional Footprint (No Sweep, No FVG, No OB)"
+                    reasons.append("⚠️ SMC Confluence Shield: Price is near Daily Resistance but lacks 1H Liquidity Sweep, OB, or FVG footprint.")
+                elif has_support_block:
                     trade_setup = "Short Blocked: Too close to Daily Support (<2.0%)"
                     reasons.append(f"⚠️ Support Shield: Price is directly on Daily Support ${fmt_price(nearest_support)} (Distance: {dist_to_support_pct:.2f}% < 2.0%), Short blocked")
                 elif sr_flip_lacks_confluence:
@@ -1408,7 +1419,8 @@ def analyze_symbol(symbol, anchored_signal=None, btc_sentiment=None, session_inf
 
                     # Bullish Judas Sweep: Freshly swept Asian Low & reclaimed above Asian Low, without chasing > 1.8%
                     dist_from_sweep_low_pct = ((entry - recent_sweep_low) / recent_sweep_low) * 100 if recent_sweep_low > 0 else 99.0
-                    if recent_sweep_low < a_low and entry > a_low and dist_from_sweep_low_pct <= 1.8:
+                    btc_allows_long = btc_sentiment.get("allow_longs", True) if btc_sentiment else True
+                    if recent_sweep_low < a_low and entry > a_low and dist_from_sweep_low_pct <= 1.8 and mtf_4h["bias"] != "BEARISH" and btc_allows_long:
                         sl = recent_sweep_low - (2.8 * atr_1h)
                         risk = entry - sl
                         if risk / entry < 0.030:
@@ -1429,7 +1441,8 @@ def analyze_symbol(symbol, anchored_signal=None, btc_sentiment=None, session_inf
 
                     # Bearish Judas Sweep: Freshly swept Asian High & rejected below Asian High, without chasing > 1.8%
                     dist_from_sweep_high_pct = ((recent_sweep_high - entry) / recent_sweep_high) * 100 if recent_sweep_high > 0 else 99.0
-                    if recent_sweep_high > a_high and entry < a_high and dist_from_sweep_high_pct <= 1.8:
+                    btc_allows_short = btc_sentiment.get("allow_shorts", True) if btc_sentiment else True
+                    if recent_sweep_high > a_high and entry < a_high and dist_from_sweep_high_pct <= 1.8 and mtf_4h["bias"] != "BULLISH" and btc_allows_short:
                         sl = recent_sweep_high + (2.8 * atr_1h)
                         risk = sl - entry
                         if risk / entry < 0.030:
@@ -1450,6 +1463,7 @@ def analyze_symbol(symbol, anchored_signal=None, btc_sentiment=None, session_inf
 
             # -----------------------------------------------------------------
             # TIER 4: RELATIVE STRENGTH (RS) / RELATIVE WEAKNESS (RW) ALPHA
+            # DEMOTED TO WATCHLIST ONLY (Zero automated live margin execution)
             # -----------------------------------------------------------------
             if not is_asian_sweep_setup:
                 is_rs_leader = (mtf_4h["bias"] == "BULLISH") and (52.0 <= rsi_1h <= 68.0) and \
@@ -1463,41 +1477,15 @@ def analyze_symbol(symbol, anchored_signal=None, btc_sentiment=None, session_inf
                                 (dist_to_support_pct >= 2.5) and not has_demand_conflict
 
                 if is_rs_leader:
-                    signal_type = "BUY / LONG"
-                    tier_badge = "💎 RELATIVE STRENGTH ALPHA"
-                    trade_setup = "Institutional RS Leader: 4H Bullish Structure + 1H Liquidity Inflow"
-                    base_support = flip_lvl if is_sr_flip else nearest_support
-                    sl = base_support - (2.8 * atr_1h)
-                    risk = entry - sl
-                    if risk / entry < 0.030:
-                        sl = entry * 0.970
-                        risk = entry - sl
-                    elif risk / entry > 0.055:
-                        sl = entry * 0.945
-                        risk = entry - sl
-                    trailing_sl = sl
-                    tp1 = entry + (risk * 1.5)
-                    tp2 = entry + (risk * 2.0)
-                    tp = entry + (risk * 3.0)
-                    reasons.append("💎 Relative Strength: Outperforming market with aligned 4H bias & 1H liquidity")
+                    signal_type = "WATCHLIST"
+                    tier_badge = "👀 RELATIVE STRENGTH WATCHLIST"
+                    trade_setup = "RS Leader: 4H Bullish (Watchlist Only - Awaiting Tier 1 Confirmation)"
+                    reasons.append("👀 Relative Strength: Outperforming market with aligned 4H bias. Held on Watchlist for Tier 1 Institutional confirmation.")
                 elif is_rw_laggard:
-                    signal_type = "SELL / SHORT"
-                    tier_badge = "💎 RELATIVE WEAKNESS ALPHA"
-                    trade_setup = "Institutional RW Laggard: 4H Bearish Structure + Supply Distribution"
-                    base_res = nearest_resistance
-                    sl = base_res + (2.8 * atr_1h)
-                    risk = sl - entry
-                    if risk / entry < 0.030:
-                        sl = entry * 1.030
-                        risk = sl - entry
-                    elif risk / entry > 0.055:
-                        sl = entry * 1.055
-                        risk = sl - entry
-                    trailing_sl = sl
-                    tp1 = entry - (risk * 1.5)
-                    tp2 = entry - (risk * 2.0)
-                    tp = entry - (risk * 3.0)
-                    reasons.append("💎 Relative Weakness: Underperforming market with aligned 4H bias & supply rejection")
+                    signal_type = "WATCHLIST"
+                    tier_badge = "👀 RELATIVE WEAKNESS WATCHLIST"
+                    trade_setup = "RW Laggard: 4H Bearish (Watchlist Only - Awaiting Tier 1 Confirmation)"
+                    reasons.append("👀 Relative Weakness: Underperforming market with aligned 4H bias. Held on Watchlist for Tier 1 Institutional confirmation.")
                 else:
                     signal_type = "WATCHLIST"
                     if is_extreme_overbought:
@@ -1531,8 +1519,6 @@ def analyze_symbol(symbol, anchored_signal=None, btc_sentiment=None, session_inf
                 is_long_sig = "BUY" in signal_type or "LONG" in signal_type
                 is_dumping = btc_sentiment.get("is_dumping", False) or "DUMPING" in str(btc_sentiment.get("status", ""))
                 is_pumping = btc_sentiment.get("is_pumping", False) or "PUMP" in str(btc_sentiment.get("status", ""))
-                is_decoupled = tier_badge in ["💎 RELATIVE STRENGTH ALPHA", "💎 RELATIVE WEAKNESS ALPHA"]
-
                 if is_long_sig:
                     if is_dumping:
                         signal_type = "WATCHLIST"
@@ -1540,12 +1526,10 @@ def analyze_symbol(symbol, anchored_signal=None, btc_sentiment=None, session_inf
                         trade_setup = "Long Blocked: BTC Actively Dumping"
                         reasons.append(f"⚠️ BTC Macro Shield: Bitcoin is actively dumping ({btc_sentiment.get('reason')}). All altcoin Longs blocked.")
                     elif "BEARISH" in str(btc_sentiment.get("status", "")):
-                        if is_decoupled:
-                            reasons.append(f"💎 RS Alpha Bypass: Leading setup decoupled from BTC ({btc_sentiment.get('reason')}). Signal permitted.")
-                        else:
-                            signal_type = "WATCHLIST"
-                            tier_badge = "🛡️ BTC BEARISH WATCHLIST"
-                            reasons.append(f"⚠️ BTC Macro Shield: Bitcoin is Bearish ({btc_sentiment.get('reason')}). Long held in Watchlist.")
+                        signal_type = "WATCHLIST"
+                        tier_badge = "🛡️ BTC BEARISH WATCHLIST"
+                        trade_setup = "Long Blocked: BTC Macro Bearish"
+                        reasons.append(f"⚠️ BTC Macro Shield: Bitcoin is Bearish ({btc_sentiment.get('reason')}). Long held in Watchlist.")
                 elif not is_long_sig:
                     if is_pumping:
                         signal_type = "WATCHLIST"
@@ -1553,12 +1537,10 @@ def analyze_symbol(symbol, anchored_signal=None, btc_sentiment=None, session_inf
                         trade_setup = "Short Blocked: BTC Parabolic Pump"
                         reasons.append(f"⚠️ BTC Macro Shield: Bitcoin is aggressively pumping ({btc_sentiment.get('reason')}). All altcoin Shorts blocked.")
                     elif "BULLISH" in str(btc_sentiment.get("status", "")):
-                        if is_decoupled:
-                            reasons.append(f"💎 RW Alpha Bypass: Lagging setup decoupled from BTC ({btc_sentiment.get('reason')}). Signal permitted.")
-                        else:
-                            signal_type = "WATCHLIST"
-                            tier_badge = "🛡️ BTC BULLISH WATCHLIST"
-                            reasons.append(f"⚠️ BTC Pump Shield: Bitcoin is Bullish ({btc_sentiment.get('reason')}). Short held in Watchlist.")
+                        signal_type = "WATCHLIST"
+                        tier_badge = "🛡️ BTC BULLISH WATCHLIST"
+                        trade_setup = "Short Blocked: BTC Macro Bullish"
+                        reasons.append(f"⚠️ BTC Pump Shield: Bitcoin is Bullish ({btc_sentiment.get('reason')}). Short held in Watchlist.")
 
             # 3. Dynamic Volume Expansion Filter (Completed Candle + Pace-Adjusted Live Candle)
             volumes_1h = [float(k[5]) for k in klines_1h]
@@ -2063,7 +2045,12 @@ def check_and_resolve_open_trades(news_shield=None):
                         
                         # --- SMC 2.0 CONFIRMED RETEST LIVE EXECUTION ---
                         executed_live_retest = False
-                        if auto_trader and auto_trader.is_live_enabled() and not s.get("executed_live"):
+                        tier_badge_str = str(s.get("tier_badge", "")).upper()
+                        is_tier1 = ("TIER 1" in tier_badge_str) and ("INSTITUTIONAL SMC" in tier_badge_str)
+
+                        if not is_tier1:
+                            print(f"[🛡️] Retest Live Execution Gate: Skipped live execution for {s.get('symbol')} ({s.get('tier_badge')}) - only Tier 1 Institutional SMC permitted on Binance.")
+                        elif auto_trader and auto_trader.is_live_enabled() and not s.get("executed_live"):
                             sym = s["symbol"]
                             cb = history_data.get("circuit_breaker", {})
                             is_cb_tripped = cb.get("is_tripped", False)
@@ -2088,6 +2075,7 @@ def check_and_resolve_open_trades(news_shield=None):
                                         "symbol": sym,
                                         "type": s["type"],
                                         "signal": s["type"],
+                                        "tier_badge": s.get("tier_badge", "⭐ TIER 1: INSTITUTIONAL SMC"),
                                         "raw_entry": l_entry,
                                         "entry": s["entry_str"],
                                         "raw_sl": s["sl"],
@@ -2450,6 +2438,16 @@ def record_new_signals_to_history(actionable_signals, history_data, open_symbols
                 "outcome_pnl": 0.0
             }
             if initial_status == "OPEN":
+                # Strict Live Execution Firewall: ONLY Tier 1 Institutional SMC
+                tier_badge_str = str(act.get("tier_badge", "")).upper()
+                is_tier1 = ("TIER 1" in tier_badge_str) and ("INSTITUTIONAL SMC" in tier_badge_str)
+                if not is_tier1:
+                    print(f"[🛡️] Live Execution Gate: Blocked live order for {sym} ({act.get('tier_badge')}). Real Binance execution is strictly locked to ⭐ TIER 1: INSTITUTIONAL SMC.")
+                    send_telegram_new_signal(act)
+                    existing_signals.append(new_item)
+                    existing_keys.add(key)
+                    continue
+
                 active_positions_count += 1
                 if auto_trader and auto_trader.is_live_enabled():
                     # Iron-clad Risk Governor: Check real-time active positions on Binance Futures
