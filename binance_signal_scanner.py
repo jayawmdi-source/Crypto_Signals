@@ -907,6 +907,8 @@ def analyze_symbol(symbol, anchored_signal=None, btc_sentiment=None, session_inf
     session_info = session_info or get_market_session()
     
     close_prices = [float(k[4]) for k in daily_klines]
+    high_prices = [float(k[2]) for k in daily_klines]
+    low_prices = [float(k[3]) for k in daily_klines]
     volumes = [float(k[5]) for k in daily_klines]
     current_price = close_prices[-1]
     
@@ -1199,13 +1201,51 @@ def analyze_symbol(symbol, anchored_signal=None, btc_sentiment=None, session_inf
                 if bull_fvg_1h:
                     reasons.append(f"💧 Bullish FVG Confluence [${fmt_price(bull_fvg_1h['bottom'])} - ${fmt_price(bull_fvg_1h['top'])}]")
 
+        # -------------------------------------------------------------
+        # Supply & Demand Conflict Analysis (Overhead/Underneath Walls within 2.5%):
+        # -------------------------------------------------------------
+        is_bear_fvg_overhead = bear_fvg_1h and (
+            bear_fvg_1h.get('is_testing') or
+            (bear_fvg_1h['bottom'] * 0.995 <= entry <= bear_fvg_1h['top'] * 1.01) or
+            (bear_fvg_1h['bottom'] > entry and ((bear_fvg_1h['bottom'] - entry) / entry) <= 0.025)
+        )
+        is_bear_ob_overhead = bear_ob_1h and (
+            bear_ob_1h.get('is_testing') or
+            (bear_ob_1h['bottom'] * 0.995 <= entry <= bear_ob_1h['top'] * 1.01) or
+            (bear_ob_1h['bottom'] > entry and ((bear_ob_1h['bottom'] - entry) / entry) <= 0.020)
+        )
+        has_supply_conflict = bool(is_bear_fvg_overhead or is_bear_ob_overhead)
+
+        is_bull_fvg_underneath = bull_fvg_1h and (
+            bull_fvg_1h.get('is_testing') or
+            (bull_fvg_1h['bottom'] * 0.99 <= entry <= bull_fvg_1h['top'] * 1.005) or
+            (bull_fvg_1h['top'] < entry and ((entry - bull_fvg_1h['top']) / entry) <= 0.025)
+        )
+        is_bull_ob_underneath = bull_ob_1h and (
+            bull_ob_1h.get('is_testing') or
+            (bull_ob_1h['bottom'] * 0.99 <= entry <= bull_ob_1h['top'] * 1.005) or
+            (bull_ob_1h['top'] < entry and ((entry - bull_ob_1h['top']) / entry) <= 0.020)
+        )
+        has_demand_conflict = bool(is_bull_fvg_underneath or is_bull_ob_underneath)
+
+        # Parabolic Exhaustion Dump Check (Anti-CAP distribution bleed filter):
+        is_post_pump_exhaustion = False
+        pump_gain_pct = 0.0
+        drop_from_peak_pct = 0.0
+        if len(high_prices) >= 4 and len(low_prices) >= 4:
+            recent_3d_high = max(high_prices[-4:-1])
+            recent_3d_low = min(low_prices[-4:-1])
+            if recent_3d_low > 0:
+                pump_gain_pct = ((recent_3d_high - recent_3d_low) / recent_3d_low) * 100
+                drop_from_peak_pct = ((recent_3d_high - current_price) / recent_3d_high) * 100
+                if pump_gain_pct >= 25.0 and drop_from_peak_pct >= 12.0:
+                    is_post_pump_exhaustion = True
+
         # ---------------------------------------------------------------------
         # TIER 1: INSTITUTIONAL SMC (4H Trend + Daily Line S&R + 1H OB/FVG)
         # ---------------------------------------------------------------------
         elif ema_bullish and mtf_4h["bias"] == "BULLISH" and (dist_to_support_pct <= 3.5 or is_bull_sr_flip) and (38 <= rsi_daily <= 68):
-            # 1. Supply Conflict Shield: Cannot Long directly into 1H Supply OB or Bearish FVG
-            has_supply_conflict = (bear_ob_1h and (bear_ob_1h.get('is_testing') or (bear_ob_1h['bottom'] * 0.995 <= entry <= bear_ob_1h['top'] * 1.01))) or \
-                                  (bear_fvg_1h and (bear_fvg_1h.get('is_testing') or (bear_fvg_1h['bottom'] * 0.995 <= entry <= bear_fvg_1h['top'] * 1.01)))
+            # 1. Supply Conflict Shield: Cannot Long directly into 1H Supply OB or Bearish FVG (or <2.5% overhead)
             btc_blocks_long = btc_sentiment and not btc_sentiment.get("allow_longs", True) and symbol != "BTCUSDT"
 
             # 2. Strict Overhead Resistance Clearance Cushion (Anti-DOT Rule):
@@ -1222,21 +1262,24 @@ def analyze_symbol(symbol, anchored_signal=None, btc_sentiment=None, session_inf
             is_asian = session_info.get("session_name") == "Asian Session"
             low_liquidity_breakout = (is_weekend or is_asian) and is_bull_sr_flip and (vol_proj_ratio < 1.0)
 
-            if has_supply_conflict or btc_blocks_long or sr_flip_lacks_confluence or has_resistance_block or low_liquidity_breakout:
+            if has_supply_conflict or btc_blocks_long or sr_flip_lacks_confluence or has_resistance_block or low_liquidity_breakout or is_post_pump_exhaustion:
                 signal_type = "WATCHLIST"
                 tier_badge = "WATCHLIST"
-                if has_resistance_block:
+                if is_post_pump_exhaustion:
+                    trade_setup = "Long Blocked: Post-Pump Exhaustion Distribution"
+                    reasons.append(f"⚠️ Exhaustion Shield: Coin pumped +{pump_gain_pct:.1f}% recently and is bleeding in post-pump distribution (-{drop_from_peak_pct:.1f}% from peak). Long blocked")
+                elif has_resistance_block:
                     trade_setup = "Long Blocked: Too close to Daily Resistance (<2.0%)"
                     reasons.append(f"⚠️ Resistance Shield: Price is directly under Daily Resistance ${fmt_price(nearest_resistance)} (Distance: {dist_to_resistance_pct:.2f}% < 2.0%), Long blocked")
-                if sr_flip_lacks_confluence:
+                elif sr_flip_lacks_confluence:
                     trade_setup = "Breakout Blocked: Lacks Sweep/FVG Confluence"
                     reasons.append("⚠️ Breakout Shield: S/R Flip breakout lacks Liquidity Sweep or fresh FVG/OB confluence (No Sweep = No Entry rule)")
-                if has_supply_conflict:
-                    trade_setup = f"Long Blocked: Inside 1H Supply Zone"
-                    reasons.append(f"⚠️ SMC Shield: Blocked Long into 1H Supply Zone / Bearish FVG")
-                if btc_blocks_long:
+                elif has_supply_conflict:
+                    trade_setup = f"Long Blocked: Overhead 1H Supply / Bearish FVG"
+                    reasons.append(f"⚠️ SMC Shield: Blocked Long into 1H Supply Zone / Bearish FVG (<2.5% overhead)")
+                elif btc_blocks_long:
                     reasons.append(f"⚠️ BTC Shield: BTC trend/momentum unfavorable ({btc_sentiment.get('reason', '') if btc_sentiment else ''}), Long signals paused")
-                if low_liquidity_breakout:
+                elif low_liquidity_breakout:
                     trade_setup = "Breakout Blocked: Low Weekend/Asian Volume"
                     reasons.append(f"⚠️ Liquidity Shield: Weekend/Asian breakout lacks volume expansion (vol ratio: {vol_proj_ratio:.2f}x < 1.0x)")
             else:
@@ -1273,9 +1316,7 @@ def analyze_symbol(symbol, anchored_signal=None, btc_sentiment=None, session_inf
                     ob_info_str = f"Bullish 1H OB [${fmt_price(bull_ob_1h['bottom'])} - ${fmt_price(bull_ob_1h['top'])}]"
 
         elif (not ema_bullish) and mtf_4h["bias"] == "BEARISH" and (dist_to_resistance_pct <= 3.5 or is_bear_sr_flip) and (32 <= rsi_daily <= 62):
-            # 1. Demand Conflict Shield: Cannot Short directly into 1H Demand OB or Bullish FVG
-            has_demand_conflict = (bull_ob_1h and (bull_ob_1h.get('is_testing') or (bull_ob_1h['bottom'] * 0.99 <= entry <= bull_ob_1h['top'] * 1.005))) or \
-                                  (bull_fvg_1h and (bull_fvg_1h.get('is_testing') or (bull_fvg_1h['bottom'] * 0.99 <= entry <= bull_fvg_1h['top'] * 1.005)))
+            # 1. Demand Conflict Shield: Cannot Short directly into 1H Demand OB or Bullish FVG (or <2.5% underneath)
             btc_blocks_short = btc_sentiment and not btc_sentiment.get("allow_shorts", True) and symbol != "BTCUSDT"
 
             # 2. Strict Overhead Support Clearance Cushion (Cannot Short directly into Daily Support):
@@ -1297,15 +1338,15 @@ def analyze_symbol(symbol, anchored_signal=None, btc_sentiment=None, session_inf
                 if has_support_block:
                     trade_setup = "Short Blocked: Too close to Daily Support (<2.0%)"
                     reasons.append(f"⚠️ Support Shield: Price is directly on Daily Support ${fmt_price(nearest_support)} (Distance: {dist_to_support_pct:.2f}% < 2.0%), Short blocked")
-                if sr_flip_lacks_confluence:
+                elif sr_flip_lacks_confluence:
                     trade_setup = "Breakdown Blocked: Lacks Sweep/FVG Confluence"
                     reasons.append("⚠️ Breakdown Shield: S/R Flip breakdown lacks Liquidity Sweep or fresh FVG/OB confluence (No Sweep = No Entry rule)")
-                if has_demand_conflict:
-                    trade_setup = f"Short Blocked: Inside 1H Demand Zone"
-                    reasons.append(f"⚠️ SMC Shield: Blocked Short into 1H Demand Zone / Bullish FVG")
-                if btc_blocks_short:
+                elif has_demand_conflict:
+                    trade_setup = f"Short Blocked: Underneath 1H Demand / Bullish FVG"
+                    reasons.append(f"⚠️ SMC Shield: Blocked Short into 1H Demand Zone / Bullish FVG (<2.5% underneath)")
+                elif btc_blocks_short:
                     reasons.append(f"⚠️ BTC Shield: BTC trend/momentum unfavorable ({btc_sentiment.get('reason', '') if btc_sentiment else ''}), Short signals paused")
-                if low_liquidity_breakdown:
+                elif low_liquidity_breakdown:
                     trade_setup = "Breakdown Blocked: Low Weekend/Asian Volume"
                     reasons.append(f"⚠️ Liquidity Shield: Weekend/Asian breakdown lacks volume expansion (vol ratio: {vol_proj_ratio:.2f}x < 1.0x)")
             else:
@@ -1407,8 +1448,15 @@ def analyze_symbol(symbol, anchored_signal=None, btc_sentiment=None, session_inf
             # TIER 4: RELATIVE STRENGTH (RS) / RELATIVE WEAKNESS (RW) ALPHA
             # -----------------------------------------------------------------
             if not is_asian_sweep_setup:
-                is_rs_leader = (mtf_4h["bias"] == "BULLISH") and (rsi_1h >= 52.0) and (sweep_1h["has_bull_sweep"] or bull_fvg_1h or bull_ob_1h) and (dist_to_support_pct <= 5.5 or is_sr_flip)
-                is_rw_laggard = (mtf_4h["bias"] == "BEARISH") and (rsi_1h <= 48.0) and (sweep_1h["has_bear_sweep"] or bear_fvg_1h or bear_ob_1h) and (dist_to_resistance_pct <= 5.5 or is_sr_flip)
+                is_rs_leader = (mtf_4h["bias"] == "BULLISH") and (52.0 <= rsi_1h <= 68.0) and \
+                               (sweep_1h["has_bull_sweep"] or bull_fvg_1h or bull_ob_1h) and \
+                               (dist_to_support_pct <= 5.5 or is_sr_flip) and \
+                               (dist_to_resistance_pct >= 2.5) and not has_supply_conflict
+
+                is_rw_laggard = (mtf_4h["bias"] == "BEARISH") and (32.0 <= rsi_1h <= 48.0) and \
+                                (sweep_1h["has_bear_sweep"] or bear_fvg_1h or bear_ob_1h) and \
+                                (dist_to_resistance_pct <= 5.5 or is_sr_flip) and \
+                                (dist_to_support_pct >= 2.5) and not has_demand_conflict
 
                 if is_rs_leader:
                     signal_type = "BUY / LONG"
@@ -1552,6 +1600,19 @@ def analyze_symbol(symbol, anchored_signal=None, btc_sentiment=None, session_inf
                     tier_badge = "🛡️ CROWDED SHORTS WATCHLIST"
                     trade_setup = f"Short Blocked: Crowded Short Trap (Funding {f_rate:+.4f}%)"
                     reasons.append(f"⚠️ Crowded Shorts Shield: Funding rate is heavily negative ({f_rate:+.4f}% < -0.035%). High risk of short squeeze cascade.")
+
+            # 6. Lower Timeframe (5M) Structure Conflict Shield
+            if choch_5m and signal_type in ["BUY / LONG", "SELL / SHORT"]:
+                if signal_type == "BUY / LONG" and choch_5m.get("has_bearish_choch"):
+                    signal_type = "WATCHLIST"
+                    tier_badge = "🛡️ 5M CHOCH CONFLICT WATCHLIST"
+                    trade_setup = "Long Blocked: 5M Bearish Structure Breakdown"
+                    reasons.append("⚠️ LTF Structure Shield: 5M Chart printed Bearish CHoCH (Lower-timeframe momentum is actively breaking down). Long held in Watchlist.")
+                elif signal_type == "SELL / SHORT" and choch_5m.get("has_bullish_choch"):
+                    signal_type = "WATCHLIST"
+                    tier_badge = "🛡️ 5M CHOCH CONFLICT WATCHLIST"
+                    trade_setup = "Short Blocked: 5M Bullish Structure Breakout"
+                    reasons.append("⚠️ LTF Structure Shield: 5M Chart printed Bullish CHoCH (Lower-timeframe momentum is actively breaking upward). Short held in Watchlist.")
 
         # Check for Pending Limit Retest on fresh signals (FVG / OB Retest Depth / High-Precision Entry)
         if signal_type == "BUY / LONG":
