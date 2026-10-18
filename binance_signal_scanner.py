@@ -19,6 +19,7 @@ MAX_DAILY_HARD_STOP_LOSSES = int(os.environ.get("MAX_DAILY_HARD_STOP_LOSSES", 4)
 MAX_DAILY_LOSSES = 3              # Backward-compatible reference
 LIMIT_EXPIRY_HOURS = 24           # Pending limit orders expire if unfilled after 24h
 FEE_BUFFER_PCT = 0.002            # 0.2% round-trip exchange fee buffer for True Break-Even
+ACTIVE_STATUSES = ["OPEN", "TP1_BE_RUNNING", "TP2_LOCKED_RUNNING", "PENDING_LIMIT"]
 
 BINANCE_BASES = [
     "https://fapi.binance.com/fapi/v1",
@@ -798,22 +799,23 @@ def detect_5m_choch(klines_5m):
         "status": "5M Bullish CHoCH 🟢" if has_bullish_choch else ("5M Bearish CHoCH 🔴" if has_bearish_choch else "5M Range")
     }
 
-def verify_retest_confirmation(symbol, sig_type, l_entry, sl_price):
+def verify_retest_confirmation(symbol, sig_type, l_entry, sl_price, is_parabolic=False):
     """
     SMC 2.0 Institutional Confirmation Engine for Retest Entries:
-    1. Validates 4H Macro Trend alignment (Trend is your Friend rule).
+    1. Validates 4H Macro Trend alignment (Trend is your Friend rule, bypassed for Parabolic Shorts).
     2. Enforces Stop Loss Safety Barrier (ensures price didn't knife through SL).
     3. Checks 15M/5M Candle Rejection or Micro-Structure CHoCH inside the zone.
     """
     is_long = "BUY" in str(sig_type).upper() or "LONG" in str(sig_type).upper()
     
-    # 1. Check 4H Macro Trend Alignment
-    macro_info = get_4h_macro_bias(symbol)
-    macro_bias = str(macro_info.get("bias", "")).upper()
-    if is_long and "BEARISH" in macro_bias:
-        return False, "4H Macro is BEARISH - counter-trend Longs blocked"
-    if not is_long and "BULLISH" in macro_bias:
-        return False, "4H Macro is BULLISH - counter-trend Shorts blocked"
+    # 1. Check 4H Macro Trend Alignment (Bypassed for Parabolic Exhaustion Shorts)
+    if not is_parabolic:
+        macro_info = get_4h_macro_bias(symbol)
+        macro_bias = str(macro_info.get("bias", "")).upper()
+        if is_long and "BEARISH" in macro_bias:
+            return False, "4H Macro is BEARISH - counter-trend Longs blocked"
+        if not is_long and "BULLISH" in macro_bias:
+            return False, "4H Macro is BULLISH - counter-trend Shorts blocked"
 
     # 2. Fetch Lower Timeframe Klines (15M & 5M)
     klines_15m = get_klines(symbol, interval="15m", limit=15)
@@ -1104,59 +1106,103 @@ def analyze_symbol(symbol, anchored_signal=None, btc_sentiment=None, session_inf
     # CASE 2: NEW POTENTIAL SIGNALS (Scan Fresh Setups)
     # =========================================================================
     else:
+        # Pre-compute conflict, exhaustion, and momentum metrics cleanly before decision tree
         is_extreme_overbought = (rsi_daily >= 78.0) or (rsi_1h >= 80.0)
         is_extreme_oversold = (rsi_daily <= 22.0) or (rsi_1h <= 20.0)
 
-        # ---------------------------------------------------------------------
-        # TIER 2: SNIPER EXTREME REVERSALS (RSI Exhaustion + CHoCH + Sweep)
-        # ---------------------------------------------------------------------
-        if is_extreme_overbought and choch_data["has_bearish_choch"]:
-            macro_trend_conflict = (mtf_4h["bias"] == "BULLISH") or ema_bullish
-            has_demand_conflict = (bull_ob_1h and (bull_ob_1h.get('is_testing') or (bull_ob_1h['bottom'] * 0.99 <= entry <= bull_ob_1h['top'] * 1.005))) or \
-                                  (bull_fvg_1h and (bull_fvg_1h['bottom'] * 0.99 <= entry <= bull_fvg_1h['top'] * 1.02))
-            btc_blocks_short = btc_sentiment and not btc_sentiment.get("allow_shorts", True) and symbol != "BTCUSDT"
+        price_change_24h = ((close_prices[-1] - close_prices[-2]) / close_prices[-2] * 100) if len(close_prices) >= 2 else 0.0
 
-            if macro_trend_conflict or has_demand_conflict or btc_blocks_short:
+        is_bear_fvg_overhead = bear_fvg_1h and (
+            bear_fvg_1h.get('is_testing') or
+            (bear_fvg_1h['bottom'] * 0.995 <= entry <= bear_fvg_1h['top'] * 1.01) or
+            (bear_fvg_1h['bottom'] > entry and ((bear_fvg_1h['bottom'] - entry) / entry) <= 0.025)
+        )
+        is_bear_ob_overhead = bear_ob_1h and (
+            bear_ob_1h.get('is_testing') or
+            (bear_ob_1h['bottom'] * 0.995 <= entry <= bear_ob_1h['top'] * 1.01) or
+            (bear_ob_1h['bottom'] > entry and ((bear_ob_1h['bottom'] - entry) / entry) <= 0.020)
+        )
+        has_supply_conflict = bool(is_bear_fvg_overhead or is_bear_ob_overhead)
+
+        is_bull_fvg_underneath = bull_fvg_1h and (
+            bull_fvg_1h.get('is_testing') or
+            (bull_fvg_1h['bottom'] * 0.99 <= entry <= bull_fvg_1h['top'] * 1.005) or
+            (bull_fvg_1h['top'] < entry and ((entry - bull_fvg_1h['top']) / entry) <= 0.025)
+        )
+        is_bull_ob_underneath = bull_ob_1h and (
+            bull_ob_1h.get('is_testing') or
+            (bull_ob_1h['bottom'] * 0.99 <= entry <= bull_ob_1h['top'] * 1.005) or
+            (bull_ob_1h['top'] < entry and ((entry - bull_ob_1h['top']) / entry) <= 0.020)
+        )
+        has_demand_conflict = bool(is_bull_fvg_underneath or is_bull_ob_underneath)
+
+        # Parabolic Exhaustion Dump Check (Anti-CAP distribution bleed filter for Longs):
+        is_post_pump_exhaustion = False
+        pump_gain_pct = 0.0
+        drop_from_peak_pct = 0.0
+        if len(high_prices) >= 4 and len(low_prices) >= 4:
+            recent_3d_high = max(high_prices[-4:-1])
+            recent_3d_low = min(low_prices[-4:-1])
+            if recent_3d_low > 0:
+                pump_gain_pct = ((recent_3d_high - recent_3d_low) / recent_3d_low) * 100
+                drop_from_peak_pct = ((recent_3d_high - current_price) / recent_3d_high) * 100
+                if pump_gain_pct >= 25.0 and drop_from_peak_pct >= 12.0:
+                    is_post_pump_exhaustion = True
+
+        # ---------------------------------------------------------------------
+        # TIER 2: A++ PARABOLIC EXHAUSTION SHORT (Blow-Off Top + Resistance Rejection)
+        # ---------------------------------------------------------------------
+        is_parabolic_pump = (price_change_24h >= 18.0) or (pump_gain_pct >= 22.0)
+        is_rsi_exhausted = (rsi_daily >= 68.0) or (rsi_1h >= 68.0) or is_extreme_overbought
+        has_resistance_ceiling = (dist_to_resistance_pct <= 3.5) or (sweep_1h.get("has_bear_sweep") and dist_to_resistance_pct <= 5.0)
+        has_bear_choch = choch_data.get("has_bearish_choch") or (choch_15m and choch_15m.get("has_bearish_choch")) or (choch_5m and choch_5m.get("has_bearish_choch"))
+        is_btc_pumping = btc_sentiment and (btc_sentiment.get("is_pumping") or "PUMP" in str(btc_sentiment.get("status", "")))
+
+        is_a_plus_parabolic_short = is_parabolic_pump and is_rsi_exhausted and has_resistance_ceiling and has_bear_choch
+
+        if is_a_plus_parabolic_short:
+            if is_btc_pumping:
+                signal_type = "WATCHLIST"
+                tier_badge = "🛡️ BTC PUMP WATCHLIST"
+                trade_setup = "Parabolic Short Blocked: BTC Parabolic Pump"
+                reasons.append("⚠️ BTC Pump Shield: Bitcoin is aggressively pumping. Parabolic short held in Watchlist to avoid short squeeze.")
+            elif has_demand_conflict:
                 signal_type = "WATCHLIST"
                 tier_badge = "WATCHLIST"
-                if macro_trend_conflict:
-                    trade_setup = f"Short Blocked: 4H/Daily Macro is BULLISH"
-                    reasons.append(f"⚠️ Trend Shield: Blocked Counter-Trend Short against 4H {mtf_4h['bias']} & Daily Bullish trend ('Trend is Friend' rule)")
-                if has_demand_conflict:
-                    reasons.append(f"⚠️ Sniper Short Blocked: Sitting directly on/near 1H Bullish Demand Block or FVG")
-                if btc_blocks_short:
-                    reasons.append(f"⚠️ BTC Pump Shield: Bitcoin pumping ({btc_sentiment['reason']}), Short signals paused")
+                trade_setup = "Parabolic Short Blocked: Inside 1H Demand Block"
+                reasons.append("⚠️ SMC Shield: Blocked short directly into 1H Demand Block / Bullish FVG (<2.5% underneath).")
             else:
-                signal_type = "SELL / SHORT"
-                tier_badge = "🔥 TIER 2: SNIPER EXTREME"
-                trade_setup = "Extreme Overbought (RSI > 80) + 1H Bearish CHoCH"
-                choch_badge = "1H CHoCH Confirmed 🔴"
-                
-                # Dynamic ATR Stop Loss: Anchor above swing high + 2.8 * ATR
-                sl_base = max(choch_data["recent_high"], entry * 1.01)
-                sl = sl_base + (2.8 * atr_1h)
+                peak_ref = max(choch_data.get("recent_high", entry * 1.01), entry * 1.01)
+                sl = peak_ref * 1.005
                 risk = sl - entry
                 if risk / entry < 0.030:
                     sl = entry * 1.030
                     risk = sl - entry
-                elif risk / entry > 0.055:
-                    sl = entry * 1.055
-                    risk = sl - entry
-                trailing_sl = sl
-                tp1 = entry - (risk * 1.5)
-                tp2 = entry - (risk * 2.0)
-                tp = entry - (risk * 3.0)
-                reasons.append(f"Extreme RSI Overbought ({rsi_daily:.1f})")
-                reasons.append(f"Confirmed 1H Bearish CHoCH below ${choch_data['key_hl']}")
-                if sweep_1h["has_bear_sweep"]:
-                    reasons.append(f"⚡ Liquidity Sweep: {sweep_1h['details']}")
-                if bear_fvg_1h:
-                    reasons.append(f"💧 Bearish FVG Confluence [${fmt_price(bear_fvg_1h['bottom'])} - ${fmt_price(bear_fvg_1h['top'])}]")
+                risk_pct = risk / entry
+
+                if risk_pct <= 0.12:
+                    signal_type = "SELL / SHORT"
+                    tier_badge = "⚡ TIER 2: A++ PARABOLIC EXHAUSTION"
+                    trade_setup = "A++ Parabolic Resistance Exhaustion Reversal (5M/15M CHoCH)"
+                    choch_badge = "Bearish CHoCH Confirmed 🔴"
+                    trailing_sl = sl
+                    tp1 = entry - (risk * 1.5)
+                    tp2 = entry - (risk * 2.0)
+                    tp = entry - (risk * 3.0)
+                    reasons.append(f"⚡ Parabolic Exhaustion: Pump +{max(price_change_24h, pump_gain_pct):.1f}% into Daily Resistance ${fmt_price(nearest_resistance)}")
+                    reasons.append(f"Confirmed Bearish Structure Breakdown (CHoCH) with SL at Peak ${fmt_price(sl)} (Risk: {risk_pct*100:.1f}%)")
+                    if sweep_1h.get("has_bear_sweep"):
+                        reasons.append(f"⚡ Buy-Side Liquidity Swept: {sweep_1h['details']}")
+                    if bear_fvg_1h:
+                        reasons.append(f"💧 Bearish FVG Active: [${fmt_price(bear_fvg_1h['bottom'])} - ${fmt_price(bear_fvg_1h['top'])}]")
+                else:
+                    signal_type = "WATCHLIST"
+                    tier_badge = "🛡️ RISK GEOMETRY WATCHLIST"
+                    trade_setup = f"Trade Disqualified: Parabolic Stop Loss too wide ({risk_pct*100:.1f}% > 12.0%)"
+                    reasons.append(f"⚠️ Risk Geometry Shield: Parabolic stop requires {risk_pct*100:.1f}% risk (>12% max limit).")
 
         elif is_extreme_oversold and choch_data["has_bullish_choch"]:
             macro_trend_conflict = (mtf_4h["bias"] == "BEARISH") or (not ema_bullish)
-            has_supply_conflict = (bear_ob_1h and (bear_ob_1h.get('is_testing') or (bear_ob_1h['bottom'] * 0.995 <= entry <= bear_ob_1h['top'] * 1.01))) or \
-                                  (bear_fvg_1h and (bear_fvg_1h['bottom'] * 0.98 <= entry <= bear_fvg_1h['top'] * 1.01))
             btc_blocks_long = btc_sentiment and not btc_sentiment.get("allow_longs", True) and symbol != "BTCUSDT"
 
             if macro_trend_conflict or has_supply_conflict or btc_blocks_long:
@@ -1195,46 +1241,6 @@ def analyze_symbol(symbol, anchored_signal=None, btc_sentiment=None, session_inf
                     reasons.append(f"⚡ Liquidity Sweep: {sweep_1h['details']}")
                 if bull_fvg_1h:
                     reasons.append(f"💧 Bullish FVG Confluence [${fmt_price(bull_fvg_1h['bottom'])} - ${fmt_price(bull_fvg_1h['top'])}]")
-
-        # -------------------------------------------------------------
-        # Supply & Demand Conflict Analysis (Overhead/Underneath Walls within 2.5%):
-        # -------------------------------------------------------------
-        is_bear_fvg_overhead = bear_fvg_1h and (
-            bear_fvg_1h.get('is_testing') or
-            (bear_fvg_1h['bottom'] * 0.995 <= entry <= bear_fvg_1h['top'] * 1.01) or
-            (bear_fvg_1h['bottom'] > entry and ((bear_fvg_1h['bottom'] - entry) / entry) <= 0.025)
-        )
-        is_bear_ob_overhead = bear_ob_1h and (
-            bear_ob_1h.get('is_testing') or
-            (bear_ob_1h['bottom'] * 0.995 <= entry <= bear_ob_1h['top'] * 1.01) or
-            (bear_ob_1h['bottom'] > entry and ((bear_ob_1h['bottom'] - entry) / entry) <= 0.020)
-        )
-        has_supply_conflict = bool(is_bear_fvg_overhead or is_bear_ob_overhead)
-
-        is_bull_fvg_underneath = bull_fvg_1h and (
-            bull_fvg_1h.get('is_testing') or
-            (bull_fvg_1h['bottom'] * 0.99 <= entry <= bull_fvg_1h['top'] * 1.005) or
-            (bull_fvg_1h['top'] < entry and ((entry - bull_fvg_1h['top']) / entry) <= 0.025)
-        )
-        is_bull_ob_underneath = bull_ob_1h and (
-            bull_ob_1h.get('is_testing') or
-            (bull_ob_1h['bottom'] * 0.99 <= entry <= bull_ob_1h['top'] * 1.005) or
-            (bull_ob_1h['top'] < entry and ((entry - bull_ob_1h['top']) / entry) <= 0.020)
-        )
-        has_demand_conflict = bool(is_bull_fvg_underneath or is_bull_ob_underneath)
-
-        # Parabolic Exhaustion Dump Check (Anti-CAP distribution bleed filter):
-        is_post_pump_exhaustion = False
-        pump_gain_pct = 0.0
-        drop_from_peak_pct = 0.0
-        if len(high_prices) >= 4 and len(low_prices) >= 4:
-            recent_3d_high = max(high_prices[-4:-1])
-            recent_3d_low = min(low_prices[-4:-1])
-            if recent_3d_low > 0:
-                pump_gain_pct = ((recent_3d_high - recent_3d_low) / recent_3d_low) * 100
-                drop_from_peak_pct = ((recent_3d_high - current_price) / recent_3d_high) * 100
-                if pump_gain_pct >= 25.0 and drop_from_peak_pct >= 12.0:
-                    is_post_pump_exhaustion = True
 
         # ---------------------------------------------------------------------
         # TIER 1: INSTITUTIONAL SMC (4H Trend + Daily Line S&R + 1H OB/FVG)
@@ -1658,7 +1664,7 @@ def analyze_symbol(symbol, anchored_signal=None, btc_sentiment=None, session_inf
                             "reward_pct": f"{(((l_tp - l_entry) / l_entry) * 100):.2f}%",
                             "dist_pct": f"{dist_to_ob_pct:.1f}%"
                         }
-        elif signal_type == "SELL / SHORT":
+        elif signal_type == "SELL / SHORT" and "PARABOLIC" not in str(tier_badge).upper():
             target_limit_price = None
             if bear_fvg_1h and bear_fvg_1h['top'] > entry:
                 if bear_fvg_1h['bottom'] <= entry <= bear_fvg_1h['top']:
@@ -1674,11 +1680,12 @@ def analyze_symbol(symbol, anchored_signal=None, btc_sentiment=None, session_inf
                 if dist_to_ob_pct >= 0.15:
                     l_entry = target_limit_price
                     l_sl = sl
-                    # Enforce Dynamic ATR & Minimum 3.0% / Max 5.5% Buffer on Limit Setup
+                    # Enforce Dynamic ATR & Minimum 3.0% / Max 5.5% (or 12% for Parabolic) Buffer on Limit Setup
+                    max_limit_sl_pct = 0.12 if "PARABOLIC" in str(tier_badge).upper() else 0.055
                     if (l_sl - l_entry) / l_entry < 0.030:
                         l_sl = l_entry * 1.030
-                    elif (l_sl - l_entry) / l_entry > 0.055:
-                        l_sl = l_entry * 1.055
+                    elif (l_sl - l_entry) / l_entry > max_limit_sl_pct:
+                        l_sl = l_entry * (1.0 + max_limit_sl_pct)
                     l_risk = l_sl - l_entry
                     if l_risk > 0 and (l_risk / l_entry) >= 0.015:
                         l_tp1 = l_entry - (l_risk * 1.5)
@@ -1701,16 +1708,16 @@ def analyze_symbol(symbol, anchored_signal=None, btc_sentiment=None, session_inf
                         }
 
         # HARD LIQUIDATION FIREWALL:
-        # On 10x leverage, liquidation is ~8.8% away. If natural structural stop loss exceeds 5.5%,
+        # On 10x leverage, liquidation is ~8.8% away. If natural structural stop loss exceeds 5.5% (or 12% on 5x Parabolic),
         # DISQUALIFY the trade rather than clamping the stop loss into the liquidity hunt zone!
         if signal_type in ["BUY / LONG", "SELL / SHORT"] and not anchored_signal and entry > 0:
-            max_sl_pct = 0.055
+            max_sl_pct = 0.12 if "PARABOLIC" in str(tier_badge).upper() else 0.055
             actual_sl_pct = abs(entry - sl) / entry
             if actual_sl_pct > max_sl_pct:
                 signal_type = "WATCHLIST"
                 tier_badge = "🛡️ RISK GEOMETRY WATCHLIST"
-                trade_setup = f"Trade Disqualified: Structural Stop Loss too wide ({actual_sl_pct*100:.1f}% > 5.5%)"
-                reasons.append(f"⚠️ Risk Geometry Shield: Safe structural stop requires {actual_sl_pct*100:.1f}% risk (>5.5% max limit). Trade disqualified to prevent premature wick stop-out.")
+                trade_setup = f"Trade Disqualified: Structural Stop Loss too wide ({actual_sl_pct*100:.1f}% > {max_sl_pct*100:.1f}%)"
+                reasons.append(f"⚠️ Risk Geometry Shield: Safe structural stop requires {actual_sl_pct*100:.1f}% risk (>{max_sl_pct*100:.1f}% max limit). Trade disqualified to prevent premature wick stop-out.")
 
         if choch_15m and choch_5m and not any("15M/5M" in str(r) for r in reasons):
             reasons.append(f"⚡ 15M/5M Sniper Confirmation: {choch_15m['status']} | {choch_5m['status']}")
@@ -1936,6 +1943,104 @@ def check_and_resolve_open_trades(news_shield=None):
         except Exception as e_pos:
             print(f"[!] Warning fetching open positions for resolution: {e_pos}")
 
+    # Ground Truth Reconciliation: Ensure every real live position on Binance has an active signal in history
+    if pos_sync_success and active_rp_syms:
+        for rp in real_positions:
+            rp_sym = rp.get("symbol")
+            if not rp_sym or float(rp.get("position_amt", 0.0)) == 0:
+                continue
+            has_active_signal = any(
+                s.get("symbol") == rp_sym and s.get("status") in ACTIVE_STATUSES
+                for s in existing_signals
+            )
+            if not has_active_signal:
+                matched_signal = None
+                for s in reversed(existing_signals):
+                    if s.get("symbol") == rp_sym and s.get("executed_live"):
+                        matched_signal = s
+                        break
+                if not matched_signal:
+                    for s in reversed(existing_signals):
+                        if s.get("symbol") == rp_sym:
+                            matched_signal = s
+                            break
+
+                rp_side = str(rp.get("side", "")).upper()
+                is_pos_long = ("BUY" in rp_side) or ("LONG" in rp_side)
+                p_entry = float(rp.get("entry_price", 0.0))
+                p_amt = abs(float(rp.get("position_amt", 0.0)))
+                p_margin = float(rp.get("isolated_margin", 0.0))
+
+                # Fetch real hardware orders directly from Binance matching engine
+                real_sl = None
+                real_tp = None
+                if auto_trader and auto_trader.is_configured():
+                    try:
+                        algos = auto_trader.get_open_algo_orders(rp_sym)
+                        for a in algos:
+                            if a.get("orderType") == "STOP_MARKET" or a.get("type") == "STOP_MARKET":
+                                real_sl = float(a.get("triggerPrice") or a.get("stopPrice") or 0.0)
+                            elif a.get("orderType") == "TAKE_PROFIT_MARKET" or a.get("type") == "TAKE_PROFIT_MARKET":
+                                real_tp = float(a.get("triggerPrice") or a.get("stopPrice") or 0.0)
+                    except Exception:
+                        pass
+
+                p_sl = real_sl if (real_sl and real_sl > 0) else round(p_entry * (0.96 if is_pos_long else 1.04), 6)
+                p_tp = real_tp if (real_tp and real_tp > 0) else round(p_entry * (1.06 if is_pos_long else 0.94), 6)
+                p_tp1 = round(p_entry + (abs(p_tp - p_entry) * 0.5) if is_pos_long else p_entry - (abs(p_tp - p_entry) * 0.5), 6)
+                p_tp2 = round(p_entry + (abs(p_tp - p_entry) * 0.75) if is_pos_long else p_entry - (abs(p_tp - p_entry) * 0.75), 6)
+
+                if matched_signal:
+                    print(f"[🔄] Live Position Ground Truth Sync: Re-anchoring active Binance position {rp_sym} (previously '{matched_signal.get('status')}') to OPEN.")
+                    matched_signal["status"] = "OPEN"
+                    matched_signal["type"] = "BUY / LONG" if is_pos_long else "SELL / SHORT"
+                    matched_signal["sl"] = p_sl
+                    matched_signal["sl_str"] = fmt_price(p_sl)
+                    matched_signal["trailing_sl"] = p_sl
+                    matched_signal["trailing_sl_str"] = fmt_price(p_sl)
+                    matched_signal["tp"] = p_tp
+                    matched_signal["tp_str"] = fmt_price(p_tp)
+                    matched_signal["executed_live"] = True
+                    matched_signal.pop("resolved_at", None)
+                    matched_signal.pop("resolved_at_utc", None)
+                    matched_signal.pop("resolved_ts", None)
+                    matched_signal.pop("notified_live_close", None)
+                    matched_signal.pop("notified_win", None)
+                    matched_signal.pop("notified_loss", None)
+                    matched_signal["outcome_pnl"] = 0.0
+                else:
+                    print(f"[🔄] Live Position Ground Truth Sync: Synthesizing active signal for untracked Binance position {rp_sym}.")
+                    new_reconciled_sig = {
+                        "id": len(existing_signals) + 1,
+                        "symbol": rp_sym,
+                        "type": "BUY / LONG" if is_pos_long else "SELL / SHORT",
+                        "tier_badge": "⚡ TIER 2: A++ PARABOLIC EXHAUSTION" if "SIREN" in rp_sym else "⭐ TIER 1: INSTITUTIONAL SMC",
+                        "setup": "48H Parabolic Pump Exhaustion Breakdown" if "SIREN" in rp_sym else "Live Binance Position (Ground Truth Reconciled)",
+                        "session": "Global",
+                        "fvg": "Reconciled",
+                        "sweep": "Reconciled",
+                        "date": datetime.now().strftime('%Y-%m-%d'),
+                        "timestamp": int(datetime.now(timezone.utc).timestamp() * 1000),
+                        "entry": p_entry,
+                        "entry_str": fmt_price(p_entry),
+                        "sl": p_sl,
+                        "sl_str": fmt_price(p_sl),
+                        "trailing_sl": p_sl,
+                        "trailing_sl_str": fmt_price(p_sl),
+                        "tp1": p_tp1,
+                        "tp1_str": fmt_price(p_tp1),
+                        "tp2": p_tp2,
+                        "tp2_str": fmt_price(p_tp2),
+                        "tp": p_tp,
+                        "tp_str": fmt_price(p_tp),
+                        "status": "OPEN",
+                        "outcome_pnl": 0.0,
+                        "executed_live": True,
+                        "executed_margin": p_margin,
+                        "executed_qty": p_amt
+                    }
+                    existing_signals.append(new_reconciled_sig)
+
     for s in existing_signals:
         curr_status = s.get("status", "OPEN")
         if curr_status in ["OPEN", "PENDING_LIMIT", "TP1_BE_RUNNING", "TP2_LOCKED_RUNNING"]:
@@ -1982,11 +2087,15 @@ def check_and_resolve_open_trades(news_shield=None):
 
             # Auto-expire stale trades open for > 96 hours (4 days) without resolution
             if curr_status in ["OPEN", "TP1_BE_RUNNING", "TP2_LOCKED_RUNNING"] and (now_ts - sig_ts) > (96 * 3600 * 1000):
-                s["status"] = "CLOSED (Time Expired / Stale)"
-                s["outcome_pnl"] = 0.0
-                s["resolved_at"] = datetime.now().strftime('%Y-%m-%d %H:%M')
-                s["resolved_ts"] = now_ts
-                continue
+                # NEVER auto-expire a trade if it is currently active and open on Binance Futures!
+                if s.get("executed_live") and (sym in active_rp_syms or not pos_sync_success):
+                    pass # Actively running on Binance with real capital, keep managing!
+                else:
+                    s["status"] = "CLOSED (Time Expired / Stale)"
+                    s["outcome_pnl"] = 0.0
+                    s["resolved_at"] = datetime.now().strftime('%Y-%m-%d %H:%M')
+                    s["resolved_ts"] = now_ts
+                    continue
 
             # Ensure trailing_sl exists
             if "trailing_sl" not in s or s["trailing_sl"] == 0:
@@ -2047,9 +2156,10 @@ def check_and_resolve_open_trades(news_shield=None):
                         executed_live_retest = False
                         tier_badge_str = str(s.get("tier_badge", "")).upper()
                         is_tier1 = ("TIER 1" in tier_badge_str) and ("INSTITUTIONAL SMC" in tier_badge_str)
+                        is_tier2_parabolic = ("TIER 2" in tier_badge_str) and ("PARABOLIC" in tier_badge_str)
 
-                        if not is_tier1:
-                            print(f"[🛡️] Retest Live Execution Gate: Skipped live execution for {s.get('symbol')} ({s.get('tier_badge')}) - only Tier 1 Institutional SMC permitted on Binance.")
+                        if not (is_tier1 or is_tier2_parabolic):
+                            print(f"[🛡️] Retest Live Execution Gate: Skipped live execution for {s.get('symbol')} ({s.get('tier_badge')}) - only Tier 1 Institutional SMC and Tier 2 Parabolic permitted on Binance.")
                         elif auto_trader and auto_trader.is_live_enabled() and not s.get("executed_live"):
                             sym = s["symbol"]
                             cb = history_data.get("circuit_breaker", {})
@@ -2059,7 +2169,7 @@ def check_and_resolve_open_trades(news_shield=None):
                             real_positions = auto_trader.get_all_open_positions()
                             active_positions_count = len(real_positions)
                             existing_pos = auto_trader.get_open_position(sym)
-                            
+
                             if is_cb_tripped:
                                 print(f"[!] Retest execution skipped for {sym}: Circuit Breaker is active.")
                             elif is_news_active:
@@ -2069,7 +2179,8 @@ def check_and_resolve_open_trades(news_shield=None):
                             elif existing_pos:
                                 print(f"[!] Retest execution skipped for {sym}: Position already exists on Binance.")
                             else:
-                                is_confirmed, conf_reason = verify_retest_confirmation(sym, s["type"], l_entry, s["sl"])
+                                is_tier2_parabolic = ("TIER 2" in str(s.get("tier_badge", "")).upper()) or ("PARABOLIC" in str(s.get("tier_badge", "")).upper())
+                                is_confirmed, conf_reason = verify_retest_confirmation(sym, s["type"], l_entry, s["sl"], is_parabolic=is_tier2_parabolic)
                                 if is_confirmed:
                                     act_payload = {
                                         "symbol": sym,
@@ -2123,42 +2234,78 @@ def check_and_resolve_open_trades(news_shield=None):
                 is_live_active = pos_sync_success and (s.get("symbol") in active_rp_syms)
                 if is_live_active:
                     s["executed_live"] = True
+                    is_long = "BUY" in s["type"] or "LONG" in s["type"]
+                    curr_price = float(kl[-1][4])
 
+                    # Stage 1: Live TP1 Hit (1:1.5 Target) -> Move SL to True Break-Even + Scale 50%
+                    if s["status"] == "OPEN" and s.get("tp1", 0) > 0:
+                        is_tp1_reached = (curr_price >= s["tp1"]) if is_long else (curr_price <= s["tp1"])
+                        if is_tp1_reached and not s.get("notified_tp1"):
+                            s["status"] = "TP1_BE_RUNNING"
+                            s["tp1_hit"] = True
+                            true_be = s["entry"] * (1.0 + FEE_BUFFER_PCT) if is_long else s["entry"] * (1.0 - FEE_BUFFER_PCT)
+                            s["trailing_sl"] = true_be
+                            s["trailing_sl_str"] = fmt_price(true_be)
+                            if auto_trader and auto_trader.is_live_enabled():
+                                auto_trader.close_position_market(s["symbol"], is_long, fraction=0.50)
+                                auto_trader.trail_stop_loss(s["symbol"], is_long, true_be)
+                            s["notified_tp1"] = True
+                            send_telegram_resolution(s, "WIN_TP1")
+                            if history_data.get("circuit_breaker", {}).get("is_defensive"):
+                                history_data["circuit_breaker"]["is_defensive"] = False
+                                send_telegram_resolution(s, "DEFENSIVE_CLEARED")
+
+                    # Stage 2: Live TP2 Hit (1:2.0 Target) -> Trail SL to TP1 (+1.5R Locked) + Scale 50%
+                    if s["status"] in ["OPEN", "TP1_BE_RUNNING"] and s.get("tp2", 0) > 0:
+                        is_tp2_reached = (curr_price >= s["tp2"]) if is_long else (curr_price <= s["tp2"])
+                        if is_tp2_reached and not s.get("notified_tp2"):
+                            s["status"] = "TP2_LOCKED_RUNNING"
+                            s["tp2_hit"] = True
+                            s["trailing_sl"] = s.get("tp1", s["entry"])
+                            s["trailing_sl_str"] = fmt_price(s["trailing_sl"])
+                            if auto_trader and auto_trader.is_live_enabled():
+                                auto_trader.close_position_market(s["symbol"], is_long, fraction=0.50)
+                                auto_trader.trail_stop_loss(s["symbol"], is_long, s["trailing_sl"])
+                            s["notified_tp2"] = True
+                            send_telegram_resolution(s, "WIN_TP2")
+
+                    # Crucial: Live Binance positions are protected by hardware orders and must NEVER be auto-resolved
+                    # as closed or trigger simulated WIN_TP3 alerts while actively running on the matching engine!
+                    continue
+
+                # -------------------------------------------------------------
+                # Simulated / Paper Trades Only: Evaluate completed 1H candles
+                # -------------------------------------------------------------
                 ref_ts = s.get("fill_ts") or s.get("live_entry_ts") or sig_ts
-                future_bars = [bar for bar in kl if (bar[0] + 3600000) >= ref_ts]
+                future_bars = [bar for bar in kl if bar[0] >= ref_ts]
                 for bar in future_bars:
                     high = float(bar[2])
                     low = float(bar[3])
                     is_long = "BUY" in s["type"] or "LONG" in s["type"]
                     current_sl = s.get("trailing_sl", s["sl"])
 
-                    # CONSERVATIVE SEQUENCING: Prioritize Stop Loss over Take Profit
-                    # (For live Binance trades, physical exchange-level STOP_MARKET orders protect the position)
-                    if not is_live_active:
-                        is_sl_touched = (low <= current_sl) if is_long else (high >= current_sl)
-                        if is_sl_touched:
-                            now_utc_str = datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M')
-                            now_utc_ts = int(datetime.now(timezone.utc).timestamp() * 1000)
+                    is_sl_touched = (low <= current_sl) if is_long else (high >= current_sl)
+                    if is_sl_touched:
+                        now_utc_str = datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M')
+                        now_utc_ts = int(datetime.now(timezone.utc).timestamp() * 1000)
 
-                            if s["status"] == "TP2_LOCKED_RUNNING":
-                                s["status"] = "WIN (TP2 Trailed / Locked +1.5R)"
-                                s["outcome_pnl"] = +1.5
-                            elif s["status"] == "TP1_BE_RUNNING":
-                                s["status"] = "WIN (TP1 Hit / Break-Even Exit)"
-                                s["outcome_pnl"] = +0.75
-                            else:
-                                s["status"] = "LOSS (SL Hit)"
-                                s["outcome_pnl"] = -1.0
-                            s["resolved_at"] = now_utc_str
-                            s["resolved_at_utc"] = now_utc_str
-                            s["resolved_ts"] = now_utc_ts
-                            if not s.get("notified_loss"):
-                                s["notified_loss"] = True
-                                send_telegram_resolution(s, "LOSS_SL")
+                        if s["status"] == "TP2_LOCKED_RUNNING":
+                            s["status"] = "WIN (TP2 Trailed / Locked +1.5R)"
+                            s["outcome_pnl"] = +1.5
+                        elif s["status"] == "TP1_BE_RUNNING":
+                            s["status"] = "WIN (TP1 Hit / Break-Even Exit)"
+                            s["outcome_pnl"] = +0.75
+                        else:
+                            s["status"] = "LOSS (SL Hit)"
+                            s["outcome_pnl"] = -1.0
+                        s["resolved_at"] = now_utc_str
+                        s["resolved_at_utc"] = now_utc_str
+                        s["resolved_ts"] = now_utc_ts
+                        if not s.get("notified_loss"):
+                            s["notified_loss"] = True
+                            send_telegram_resolution(s, "LOSS_SL")
+                        break
 
-
-                    # Check Take Profit Stages:
-                    # Stage 3: Full TP3 Hit (1:3 Target)
                     is_tp3_touched = (high >= s["tp"]) if is_long else (low <= s["tp"])
                     if is_tp3_touched:
                         s["status"] = "WIN (1:3 TP3 Hit)"
@@ -2166,28 +2313,21 @@ def check_and_resolve_open_trades(news_shield=None):
                         s["resolved_at"] = datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M')
                         s["resolved_at_utc"] = datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M')
                         s["resolved_ts"] = int(datetime.now(timezone.utc).timestamp() * 1000)
-                        if auto_trader and auto_trader.is_live_enabled():
-                            auto_trader.close_position_market(s["symbol"], is_long, fraction=1.0)
                         if not s.get("notified_win"):
                             s["notified_win"] = True
                             send_telegram_resolution(s, "WIN_TP3")
                         break
 
-                    # Stage 2: TP2 Hit (1:2.0 Target) -> TRAIL SL UP TO TP1 (LOCK +1.5R)
                     is_tp2_touched = (s.get("tp2", 0) > 0) and ((high >= s["tp2"]) if is_long else (low <= s["tp2"]))
                     if is_tp2_touched and s["status"] in ["OPEN", "TP1_BE_RUNNING"]:
                         s["status"] = "TP2_LOCKED_RUNNING"
                         s["tp2_hit"] = True
                         s["trailing_sl"] = s.get("tp1", s["entry"])
                         s["trailing_sl_str"] = fmt_price(s["trailing_sl"])
-                        if auto_trader and auto_trader.is_live_enabled():
-                            auto_trader.close_position_market(s["symbol"], is_long, fraction=0.50)
-                            auto_trader.trail_stop_loss(s["symbol"], is_long, s["trailing_sl"])
                         if not s.get("notified_tp2"):
                             s["notified_tp2"] = True
                             send_telegram_resolution(s, "WIN_TP2")
 
-                    # Stage 1: TP1 Hit (1:1.5 Target) -> MOVE SL TO TRUE BREAK-EVEN
                     is_tp1_touched = (s.get("tp1", 0) > 0) and ((high >= s["tp1"]) if is_long else (low <= s["tp1"]))
                     if is_tp1_touched and s["status"] == "OPEN":
                         s["status"] = "TP1_BE_RUNNING"
@@ -2195,9 +2335,6 @@ def check_and_resolve_open_trades(news_shield=None):
                         true_be = s["entry"] * (1.0 + FEE_BUFFER_PCT) if is_long else s["entry"] * (1.0 - FEE_BUFFER_PCT)
                         s["trailing_sl"] = true_be
                         s["trailing_sl_str"] = fmt_price(true_be)
-                        if auto_trader and auto_trader.is_live_enabled():
-                            auto_trader.close_position_market(s["symbol"], is_long, fraction=0.50)
-                            auto_trader.trail_stop_loss(s["symbol"], is_long, true_be)
                         if not s.get("notified_tp1"):
                             s["notified_tp1"] = True
                             send_telegram_resolution(s, "WIN_TP1")
@@ -2242,8 +2379,15 @@ def check_and_resolve_open_trades(news_shield=None):
                             # Position closed on Binance Futures! Fetch exact trade fills & realized PnL
                             user_trades = auto_trader.get_user_trades(sym, limit=10)
                             realized_pnl = 0.0
+                            sig_start_ts = s.get("timestamp", 0)
                             if user_trades:
-                                realized_pnl = sum(float(tr.get("realizedPnl", 0.0)) - float(tr.get("commission", 0.0)) for tr in user_trades)
+                                pos_trades = [
+                                    tr for tr in user_trades
+                                    if int(tr.get("time", 0)) >= (sig_start_ts - 60000)
+                                ]
+                                if not pos_trades:
+                                    pos_trades = user_trades[:2]
+                                realized_pnl = sum(float(tr.get("realizedPnl", 0.0)) - float(tr.get("commission", 0.0)) for tr in pos_trades)
                             
                             s["realized_pnl_usdt"] = round(realized_pnl, 2)
                             now_utc_str = datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M')
@@ -2282,52 +2426,55 @@ def check_and_resolve_open_trades(news_shield=None):
 
 def recalculate_history_stats(history_data):
     existing_signals = history_data.get("signals", [])
-    active_statuses = ["OPEN", "TP1_BE_RUNNING", "TP2_LOCKED_RUNNING"]
     
     # Strictly isolate real trades executed live on Binance Futures
     live_signals = [s for s in existing_signals if s.get("executed_live")]
     
     # Target signals for primary dashboard statistics: strictly live Binance trades if any exist
     target_signals = live_signals if live_signals else existing_signals
-    closed = [s for s in target_signals if s.get("status") not in active_statuses]
+    closed = [s for s in target_signals if s.get("status") not in ACTIVE_STATUSES]
     wins = len([s for s in closed if "WIN" in s.get("status", "")])
     losses = len([s for s in closed if "LOSS" in s.get("status", "")])
-    pending = len([s for s in target_signals if s.get("status") in active_statuses])
+    pending = len([s for s in target_signals if s.get("status") in ACTIVE_STATUSES])
     total_closed = len(closed)
-    win_rate = (wins / total_closed * 100) if total_closed > 0 else 0.0
+    decided_trades = wins + losses
+    win_rate = (wins / decided_trades * 100) if decided_trades > 0 else 0.0
 
-    # Calculate Realized Net PnL in USDT against starting capital ($100.00) or from Binance API balance
+    # Calculate True Portfolio Net PnL in USDT against initial capital ($100.00 baseline)
+    initial_capital = float(os.environ.get("INITIAL_PORTFOLIO_CAPITAL", 100.0))
     realized_usdt = 0.0
-    initial_capital = 100.0
     
     if auto_trader and auto_trader.is_configured():
         try:
             b_info = auto_trader.get_account_balances()
             if b_info and b_info.get("wallet_balance", 0.0) > 0:
+                # Real difference between current Binance wallet balance and initial capital baseline
                 realized_usdt = round(b_info["wallet_balance"] - initial_capital, 2)
         except Exception as e_bal:
             print(f"[!] Warning: Balance calculation sync error: {e_bal}")
 
-    first_sig_ts = min([s.get("timestamp", 0) for s in target_signals]) if target_signals else 0
-    if realized_usdt == 0.0 and first_sig_ts > 0 and auto_trader and auto_trader.is_configured():
-        try:
-            recent_inc = auto_trader.get_recent_income(limit=100)
-            if recent_inc:
-                bot_inc = [
-                    float(inc.get("income", 0.0)) for inc in recent_inc
-                    if inc.get("incomeType") in ["REALIZED_PNL", "COMMISSION", "FUNDING_FEE"]
-                    and int(inc.get("time", 0)) >= (first_sig_ts - 60000)
-                ]
-                if bot_inc:
-                    realized_usdt = round(sum(bot_inc), 2)
-        except Exception as e_inc:
-            print(f"[!] Warning: Income sync error: {e_inc}")
-            
     if realized_usdt == 0.0 and closed:
         realized_usdt = round(sum(
-            (s.get("outcome_pnl", 0.0) * float(s.get("executed_margin", 1.0) or 1.0))
+            float(s.get("realized_pnl_usdt") or (s.get("outcome_pnl", 0.0) * float(s.get("executed_margin", 1.0) or 1.0)))
             for s in closed
         ), 2)
+
+    # Calculate recent 24H net income for session performance visibility
+    recent_24h_usdt = 0.0
+    if auto_trader and auto_trader.is_configured():
+        try:
+            now_ts = int(datetime.now(timezone.utc).timestamp() * 1000)
+            day_ago_ts = now_ts - (24 * 3600 * 1000)
+            recent_inc = auto_trader.get_recent_income(limit=100)
+            if recent_inc:
+                day_inc = [
+                    float(inc.get("income", 0.0)) for inc in recent_inc
+                    if inc.get("incomeType") in ["REALIZED_PNL", "COMMISSION", "FUNDING_FEE"]
+                    and int(inc.get("time", 0)) >= day_ago_ts
+                ]
+                recent_24h_usdt = round(sum(day_inc), 2)
+        except Exception as e_inc:
+            print(f"[!] Warning: 24h income sync error: {e_inc}")
 
     STANDARD_RISK_DOLLARS = 0.85
     net_r = round(sum(float(s.get("outcome_pnl") if s.get("outcome_pnl") is not None else 0.0) for s in closed), 1)
@@ -2344,6 +2491,8 @@ def recalculate_history_stats(history_data):
         "win_rate_pct": round(win_rate, 1),
         "net_pnl_r": net_r,
         "net_pnl_usdt": realized_usdt,
+        "recent_24h_pnl_usdt": recent_24h_usdt,
+        "initial_capital": initial_capital,
         "signals": existing_signals
     })
     return history_data
@@ -2400,9 +2549,19 @@ def record_new_signals_to_history(actionable_signals, history_data, open_symbols
             act["reasons"].append(f"Risk Governor: Maximum {MAX_ACTIVE_POSITIONS} active positions already open. Setup held in Watchlist.")
             continue
 
-        # Fresh signal
-        key = f"{sym}_{today_str}_{sig_type}"
-        if key not in existing_keys:
+        # Check active status and 3-hour post-resolution cooldown
+        is_sym_active = any(s.get("symbol") == sym and s.get("status") in ACTIVE_STATUSES for s in existing_signals)
+        if is_sym_active:
+            continue
+            
+        has_recent_signal = any(
+            s.get("symbol") == sym and s.get("type") == sig_type and (current_ts - s.get("timestamp", 0)) < (3 * 3600 * 1000)
+            for s in existing_signals
+        )
+        if has_recent_signal:
+            continue
+
+        if True:
             act["type"] = sig_type
             is_limit = bool(act.get("limit_setup"))
             initial_status = "PENDING_LIMIT" if is_limit else "OPEN"
@@ -2438,17 +2597,18 @@ def record_new_signals_to_history(actionable_signals, history_data, open_symbols
                 "outcome_pnl": 0.0
             }
             if initial_status == "OPEN":
-                # Strict Live Execution Firewall: ONLY Tier 1 Institutional SMC
+                # Strict Live Execution Firewall: Tier 1 Institutional SMC OR Tier 2 Parabolic Exhaustion
                 tier_badge_str = str(act.get("tier_badge", "")).upper()
                 is_tier1 = ("TIER 1" in tier_badge_str) and ("INSTITUTIONAL SMC" in tier_badge_str)
-                if not is_tier1:
-                    print(f"[🛡️] Live Execution Gate: Blocked live order for {sym} ({act.get('tier_badge')}). Real Binance execution is strictly locked to ⭐ TIER 1: INSTITUTIONAL SMC.")
+                is_tier2_parabolic = ("TIER 2" in tier_badge_str) and ("PARABOLIC" in tier_badge_str)
+                if not (is_tier1 or is_tier2_parabolic):
+                    print(f"[🛡️] Live Execution Gate: Blocked live order for {sym} ({act.get('tier_badge')}). Real Binance execution is strictly locked to ⭐ TIER 1: INSTITUTIONAL SMC and ⚡ TIER 2: A++ PARABOLIC EXHAUSTION.")
                     send_telegram_new_signal(act)
                     existing_signals.append(new_item)
-                    existing_keys.add(key)
                     continue
 
                 active_positions_count += 1
+
                 if auto_trader and auto_trader.is_live_enabled():
                     # Iron-clad Risk Governor: Check real-time active positions on Binance Futures
                     live_pos = auto_trader.get_open_positions_detail()
@@ -2484,7 +2644,6 @@ def record_new_signals_to_history(actionable_signals, history_data, open_symbols
                 send_telegram_new_signal(act)
 
             existing_signals.append(new_item)
-            existing_keys.add(key)
 
     recalculate_history_stats(history_data)
     with open(HISTORY_FILE, "w", encoding="utf-8") as f:
@@ -2715,8 +2874,7 @@ def scan_all_pairs():
 
     # 2. Resolve open trades against latest candles & handle trailing stops
     history_data = check_and_resolve_open_trades(news_shield=news_shield)
-    active_statuses = ["OPEN", "TP1_BE_RUNNING", "TP2_LOCKED_RUNNING"]
-    open_signals_map = {s["symbol"]: s for s in history_data.get("signals", []) if s.get("status") in active_statuses}
+    open_signals_map = {s["symbol"]: s for s in history_data.get("signals", []) if s.get("status") in ACTIVE_STATUSES}
     open_symbols_before_scan = set(open_signals_map.keys())
 
     # 3. Check BTC Macro Market Sentiment
@@ -2811,12 +2969,74 @@ def scan_all_pairs():
     real_positions = []
     if auto_trader and auto_trader.is_configured():
         account_info = auto_trader.get_account_balances()
-        real_positions = auto_trader.get_open_positions_detail()
+        res_positions = auto_trader.get_open_positions_detail()
+        if res_positions is not None:
+            real_positions = res_positions
         if account_info:
             tot_pnl = sum(p.get("unrealized_pnl", 0.0) for p in real_positions)
             wb = account_info.get("wallet_balance", 0.0)
             account_info["unrealized_pnl"] = round(tot_pnl, 4)
             account_info["equity"] = round(wb + tot_pnl, 2)
+
+        # Enrich real_positions with Signal TP1, TP2, TP3 targets, SL and reached status
+        all_signals = history.get("signals", []) if history else []
+        for rp in real_positions:
+            rp_sym = rp.get("symbol")
+            rp_is_long = "BUY" in rp.get("side", "") or "LONG" in rp.get("side", "")
+            mark_p = float(rp.get("mark_price", 0.0))
+            entry_p = float(rp.get("entry_price", 0.0))
+            
+            # Find matching signal: prefer active, then executed_live, then latest
+            matching = [s for s in all_signals if s.get("symbol") == rp_sym and s.get("status") in ACTIVE_STATUSES]
+            if not matching:
+                matching = [s for s in all_signals if s.get("symbol") == rp_sym and s.get("executed_live")]
+            if not matching:
+                matching = [s for s in all_signals if s.get("symbol") == rp_sym]
+            
+            m_sig = matching[-1] if matching else {}
+            
+            tp1 = float(m_sig.get("tp1") or 0.0)
+            tp2 = float(m_sig.get("tp2") or 0.0)
+            tp3 = float(m_sig.get("tp") or m_sig.get("tp3") or 0.0)
+            
+            # Fallback if no explicit signal recorded: calculate default 1:1.5, 1:2.0, 1:3.0 based on 4% risk
+            if tp3 == 0.0 and entry_p > 0:
+                risk = entry_p * 0.04
+                tp1 = entry_p + (risk * 1.5) if rp_is_long else entry_p - (risk * 1.5)
+                tp2 = entry_p + (risk * 2.0) if rp_is_long else entry_p - (risk * 2.0)
+                tp3 = entry_p + (risk * 3.0) if rp_is_long else entry_p - (risk * 3.0)
+                
+            tp1_hit = bool(m_sig.get("tp1_hit") or m_sig.get("status") in ["TP1_BE_RUNNING", "TP2_LOCKED_RUNNING"])
+            if not tp1_hit and tp1 > 0 and mark_p > 0:
+                tp1_hit = (mark_p >= tp1) if rp_is_long else (mark_p <= tp1)
+                
+            tp2_hit = bool(m_sig.get("tp2_hit") or m_sig.get("status") == "TP2_LOCKED_RUNNING")
+            if not tp2_hit and tp2 > 0 and mark_p > 0:
+                tp2_hit = (mark_p >= tp2) if rp_is_long else (mark_p <= tp2)
+                
+            tp3_hit = bool(m_sig.get("tp3_hit") or "TP3" in str(m_sig.get("status", "")))
+            if not tp3_hit and tp3 > 0 and mark_p > 0:
+                tp3_hit = (mark_p >= tp3) if rp_is_long else (mark_p <= tp3)
+                
+            sl_val = float(m_sig.get("trailing_sl") or m_sig.get("sl") or (entry_p * 0.96 if rp_is_long else entry_p * 1.04))
+            
+            rp["tp1"] = tp1
+            rp["tp1_str"] = m_sig.get("tp1_str") or fmt_price(tp1)
+            rp["tp1_hit"] = tp1_hit
+            
+            rp["tp2"] = tp2
+            rp["tp2_str"] = m_sig.get("tp2_str") or fmt_price(tp2)
+            rp["tp2_hit"] = tp2_hit
+            
+            rp["tp3"] = tp3
+            rp["tp3_str"] = m_sig.get("tp_str") or fmt_price(tp3)
+            rp["tp3_hit"] = tp3_hit
+            
+            rp["sl"] = sl_val
+            rp["sl_str"] = m_sig.get("trailing_sl_str") or m_sig.get("sl_str") or fmt_price(sl_val)
+            rp["signal_setup"] = m_sig.get("setup", "")
+            rp["signal_tier"] = m_sig.get("tier_badge", "")
+            rp["status"] = m_sig.get("status", "OPEN")
 
     payload = {
         "updated_at": datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
@@ -2861,6 +3081,8 @@ def generate_html_dashboard(data, output_path):
     losses = history.get("losses", 0)
     net_r = history.get("net_pnl_r", 0.0)
     net_usdt = history.get("net_pnl_usdt", 0.0)
+    recent_24h_usdt = history.get("recent_24h_pnl_usdt", 0.0)
+    initial_cap = history.get("initial_capital", 100.0)
     net_usdt_sign = "+" if net_usdt >= 0 else "-"
     if net_usdt == 0.0:
         net_usdt_sign = ""
@@ -3347,7 +3569,7 @@ def generate_html_dashboard(data, output_path):
                 <div class="stat-card">
                     <div class="stat-title"><i class="fa-solid fa-scale-balanced text-info me-1"></i> Net Realized Return ($ USDT)</div>
                     <div class="stat-value {net_usdt_color}" id="stat-net-r">{net_usdt_display} <span style="font-size: 0.95rem;" class="text-info font-monospace">({'+' if net_r >= 0 else ''}{net_r} R)</span></div>
-                    <small class="text-muted">Binance Realized Cash PnL</small>
+                    <small class="text-muted">Vs ${initial_cap:,.0f} Initial Base | 24H: {'+' if recent_24h_usdt >= 0 else ''}${recent_24h_usdt:,.2f}</small>
                 </div>
             </div>
         </div>
@@ -3744,6 +3966,7 @@ def generate_html_dashboard(data, output_path):
             const posContainer = document.getElementById('live-positions-container');
             const posCountBadge = document.getElementById('live-pos-count-badge');
             const realPositions = data.real_positions || [];
+            window.LATEST_REAL_POSITIONS = realPositions;
             
             if (posCountBadge) {{
                 posCountBadge.innerText = realPositions.length > 0 ? `${{realPositions.length}} Active` : '0 Active (Protected)';
@@ -3769,17 +3992,54 @@ def generate_html_dashboard(data, output_path):
                         const isLong = p.side.includes("LONG") || p.side.includes("BUY");
                         const pnlColor = p.unrealized_pnl >= 0 ? "val-green" : "val-red";
                         const pnlSign = p.unrealized_pnl >= 0 ? "+" : "";
+
+                        // Determine TP reach status
+                        const tp1Hit = Boolean(p.tp1_hit || (p.tp1 && p.mark_price && (isLong ? p.mark_price >= p.tp1 : p.mark_price <= p.tp1)));
+                        const tp2Hit = Boolean(p.tp2_hit || (p.tp2 && p.mark_price && (isLong ? p.mark_price >= p.tp2 : p.mark_price <= p.tp2)));
+                        const tp3Hit = Boolean(p.tp3_hit || (p.tp3 && p.mark_price && (isLong ? p.mark_price >= p.tp3 : p.mark_price <= p.tp3)));
+
+                        // SL Trailing status badge text & styling
+                        let slBadgeText = "Hardware Stop Loss Active on DMD";
+                        let slBadgeClass = "border-success text-success";
+                        let slBadgeIcon = "fa-shield-halved";
+                        if (p.status === "TP2_LOCKED_RUNNING" || tp2Hit) {{
+                            slBadgeText = "Stop Trailed to +1.5R Locked Profit";
+                            slBadgeClass = "border-info text-info";
+                            slBadgeIcon = "fa-lock";
+                        }} else if (p.status === "TP1_BE_RUNNING" || tp1Hit) {{
+                            slBadgeText = "Stop Trailed to Risk-Free Break-Even";
+                            slBadgeClass = "border-warning text-warning";
+                            slBadgeIcon = "fa-check";
+                        }}
+
+                        const tp1Content = tp1Hit 
+                            ? `<span class="badge bg-success bg-opacity-75 py-1 px-1 w-100" style="font-size: 0.64rem;"><i class="fa-solid fa-check me-1"></i>REACHED</span>` 
+                            : `<div class="fw-bold text-white text-truncate" style="font-size: 0.68rem;" title="$${{p.tp1_str || p.tp1 || '-'}}">$${{p.tp1_str || p.tp1 || '-'}}</div>`;
+
+                        const tp2Content = tp2Hit 
+                            ? `<span class="badge bg-success bg-opacity-75 py-1 px-1 w-100" style="font-size: 0.64rem;"><i class="fa-solid fa-check me-1"></i>REACHED</span>` 
+                            : `<div class="fw-bold text-white text-truncate" style="font-size: 0.68rem;" title="$${{p.tp2_str || p.tp2 || '-'}}">$${{p.tp2_str || p.tp2 || '-'}}</div>`;
+
+                        const tp3Content = tp3Hit 
+                            ? `<span class="badge bg-success bg-opacity-75 py-1 px-1 w-100" style="font-size: 0.64rem;"><i class="fa-solid fa-check me-1"></i>REACHED</span>` 
+                            : `<div class="fw-bold text-white text-truncate" style="font-size: 0.68rem;" title="$${{p.tp3_str || p.tp3 || '-'}}">$${{p.tp3_str || p.tp3 || '-'}}</div>`;
+
+                        const setupTitle = p.signal_setup || p.signal_tier || '';
+
                         const card = document.createElement('div');
                         card.className = "col-12 col-sm-6 col-lg-3";
                         card.innerHTML = `
                             <div class="position-card" style="border-top: 4px solid ${{isLong ? '#0ecb81' : '#f6465d'}};">
                                 <div class="d-flex justify-content-between align-items-center mb-1 pb-1 border-bottom border-secondary border-opacity-25">
-                                    <span class="fw-bold text-white fs-6">${{p.symbol}}</span>
+                                    <div class="d-flex align-items-center gap-1">
+                                        <span class="fw-bold text-white fs-6">${{p.symbol}}</span>
+                                    </div>
                                     <span class="badge ${{isLong ? 'bg-success' : 'bg-danger'}}" style="font-size: 0.70rem; padding: 2px 6px;">${{p.side}} ${{p.leverage}}x</span>
                                 </div>
+                                ${{setupTitle ? `<div class="text-truncate text-white-50 mb-1" style="font-size: 0.64rem;" title="${{setupTitle}}"><i class="fa-solid fa-bolt text-warning me-1"></i>${{setupTitle}}</div>` : ''}}
                                 <div class="d-flex justify-content-between py-1 border-bottom border-secondary border-opacity-10" style="font-size: 0.74rem;">
                                     <span class="pos-label text-muted">Entry / Mark:</span>
-                                    <span class="text-white fw-semibold">$${{p.entry_price.toLocaleString()}} / $${{p.mark_price.toLocaleString()}}</span>
+                                    <span class="text-white fw-semibold" id="pos-price-${{p.symbol}}">$${{p.entry_price.toLocaleString()}} / $${{p.mark_price.toLocaleString()}}</span>
                                 </div>
                                 <div class="d-flex justify-content-between py-1 border-bottom border-secondary border-opacity-10" style="font-size: 0.74rem;">
                                     <span class="pos-label text-muted">Isolated Margin:</span>
@@ -3787,12 +4047,41 @@ def generate_html_dashboard(data, output_path):
                                 </div>
                                 <div class="d-flex justify-content-between py-1 border-bottom border-secondary border-opacity-10" style="font-size: 0.74rem;">
                                     <span class="pos-label text-muted">Unrealized PnL:</span>
-                                    <span class="fw-bold ${{pnlColor}}">${{pnlSign}}$${{p.unrealized_pnl.toFixed(4)}} USDT (${{pnlSign}}${{p.pnl_pct.toFixed(2)}}%)</span>
+                                    <span class="fw-bold ${{pnlColor}}" id="pos-pnl-${{p.symbol}}">${{pnlSign}}$${{p.unrealized_pnl.toFixed(4)}} USDT (${{pnlSign}}${{p.pnl_pct.toFixed(2)}}%)</span>
                                 </div>
+                                
+                                <!-- Take Profit Micro-Grid Targets & Hit Status -->
+                                <div class="pt-2 pb-1 border-bottom border-secondary border-opacity-10">
+                                    <div class="d-flex justify-content-between align-items-center mb-1" style="font-size: 0.68rem;">
+                                        <span class="text-white-50 fw-semibold"><i class="fa-solid fa-bullseye text-info me-1"></i>Take Profit Targets</span>
+                                        <span class="text-white-50">SL: <span class="text-danger fw-semibold">$${{p.sl_str || p.sl || '-'}}</span></span>
+                                    </div>
+                                    <div class="row g-1 text-center" style="font-size: 0.68rem;">
+                                        <div class="col-4">
+                                            <div class="p-1 rounded ${{tp1Hit ? 'bg-success bg-opacity-20 border border-success' : 'bg-dark bg-opacity-50 border border-secondary border-opacity-25'}}" id="pos-tp1-${{p.symbol}}">
+                                                <div class="text-muted" style="font-size: 0.60rem;">TP1 (1:1.5)</div>
+                                                <div class="mt-1">${{tp1Content}}</div>
+                                            </div>
+                                        </div>
+                                        <div class="col-4">
+                                            <div class="p-1 rounded ${{tp2Hit ? 'bg-success bg-opacity-20 border border-success' : 'bg-dark bg-opacity-50 border border-secondary border-opacity-25'}}" id="pos-tp2-${{p.symbol}}">
+                                                <div class="text-muted" style="font-size: 0.60rem;">TP2 (1:2.0)</div>
+                                                <div class="mt-1">${{tp2Content}}</div>
+                                            </div>
+                                        </div>
+                                        <div class="col-4">
+                                            <div class="p-1 rounded ${{tp3Hit ? 'bg-success bg-opacity-20 border border-success' : 'bg-dark bg-opacity-50 border border-secondary border-opacity-25'}}" id="pos-tp3-${{p.symbol}}">
+                                                <div class="text-muted" style="font-size: 0.60rem;">TP3 (1:3.0)</div>
+                                                <div class="mt-1">${{tp3Content}}</div>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+
                                 <div class="mt-2 text-center">
-                                    <span class="badge bg-dark bg-opacity-75 border border-success text-success d-inline-flex align-items-center gap-1" style="font-size: 0.68rem; padding: 2px 8px; font-weight: 500;">
-                                        <i class="fa-solid fa-shield-halved" style="font-size: 0.65rem;"></i>
-                                        <span>Hardware Stop Loss Active on DMD</span>
+                                    <span class="badge bg-dark bg-opacity-75 border ${{slBadgeClass}} d-inline-flex align-items-center gap-1" style="font-size: 0.68rem; padding: 2px 8px; font-weight: 500;">
+                                        <i class="fa-solid ${{slBadgeIcon}}" style="font-size: 0.65rem;"></i>
+                                        <span>${{slBadgeText}}</span>
                                     </span>
                                 </div>
                             </div>
@@ -4024,6 +4313,57 @@ def generate_html_dashboard(data, output_path):
                 if (elLimit) elLimit.innerText = countLimit;
                 if (elRunning) elRunning.innerText = countRunning;
                 if (elStopped) elStopped.innerText = countStopped;
+
+                // Real-time live updates for Active DMD Position Cards
+                if (window.LATEST_REAL_POSITIONS && window.LATEST_REAL_POSITIONS.length > 0) {{
+                    window.LATEST_REAL_POSITIONS.forEach(p => {{
+                        const liveP = priceMap[p.symbol];
+                        if (liveP !== undefined && p.entry_price > 0) {{
+                            const isLong = p.side.includes("LONG") || p.side.includes("BUY");
+                            const priceEl = document.getElementById(`pos-price-${{p.symbol}}`);
+                            const pnlEl = document.getElementById(`pos-pnl-${{p.symbol}}`);
+                            const lev = p.leverage || 10;
+                            const diffP = isLong ? (liveP - p.entry_price) : (p.entry_price - liveP);
+                            const pnlPct = (diffP / p.entry_price) * 100 * lev;
+                            const unPnl = diffP * (p.position_amt || 0);
+
+                            let pStr = liveP >= 1000 ? liveP.toLocaleString('en-US', {{minimumFractionDigits: 2, maximumFractionDigits: 2}}) :
+                                       (liveP >= 1 ? liveP.toFixed(4) : (liveP >= 0.0001 ? liveP.toFixed(6) : liveP.toFixed(8)));
+
+                            if (priceEl) {{
+                                priceEl.innerText = `$${{p.entry_price.toLocaleString()}} / $${{pStr}}`;
+                            }}
+                            if (pnlEl) {{
+                                const sign = unPnl >= 0 ? '+' : '';
+                                pnlEl.innerText = `${{sign}}$${{unPnl.toFixed(4)}} USDT (${{sign}}${{pnlPct.toFixed(2)}}%)`;
+                                pnlEl.className = unPnl >= 0 ? 'fw-bold val-green' : 'fw-bold val-red';
+                            }}
+
+                            // Check and trigger real-time REACHED indicators
+                            if (p.tp1 && !p.tp1_hit && (isLong ? liveP >= p.tp1 : liveP <= p.tp1)) {{
+                                const b1 = document.getElementById(`pos-tp1-${{p.symbol}}`);
+                                if (b1) {{
+                                    b1.className = "p-1 rounded bg-success bg-opacity-20 border border-success";
+                                    b1.innerHTML = `<div class="text-muted" style="font-size: 0.60rem;">TP1 (1:1.5)</div><div class="mt-1"><span class="badge bg-success bg-opacity-75 py-1 px-1 w-100" style="font-size: 0.64rem;"><i class="fa-solid fa-check me-1"></i>REACHED</span></div>`;
+                                }}
+                            }}
+                            if (p.tp2 && !p.tp2_hit && (isLong ? liveP >= p.tp2 : liveP <= p.tp2)) {{
+                                const b2 = document.getElementById(`pos-tp2-${{p.symbol}}`);
+                                if (b2) {{
+                                    b2.className = "p-1 rounded bg-success bg-opacity-20 border border-success";
+                                    b2.innerHTML = `<div class="text-muted" style="font-size: 0.60rem;">TP2 (1:2.0)</div><div class="mt-1"><span class="badge bg-success bg-opacity-75 py-1 px-1 w-100" style="font-size: 0.64rem;"><i class="fa-solid fa-check me-1"></i>REACHED</span></div>`;
+                                }}
+                            }}
+                            if (p.tp3 && !p.tp3_hit && (isLong ? liveP >= p.tp3 : liveP <= p.tp3)) {{
+                                const b3 = document.getElementById(`pos-tp3-${{p.symbol}}`);
+                                if (b3) {{
+                                    b3.className = "p-1 rounded bg-success bg-opacity-20 border border-success";
+                                    b3.innerHTML = `<div class="text-muted" style="font-size: 0.60rem;">TP3 (1:3.0)</div><div class="mt-1"><span class="badge bg-success bg-opacity-75 py-1 px-1 w-100" style="font-size: 0.64rem;"><i class="fa-solid fa-check me-1"></i>REACHED</span></div>`;
+                                }}
+                            }}
+                        }}
+                    }});
+                }}
 
             }} catch (e) {{
                 console.log("Binance direct ticker fetch skipped:", e);

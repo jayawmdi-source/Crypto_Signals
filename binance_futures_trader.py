@@ -540,10 +540,12 @@ class BinanceFuturesTrader:
             print(f"[!] Auto-Trader Risk Shield: Maximum {max_active} positions cap reached ({len(open_positions)}/{max_active}). Skipping execution for {symbol}.")
             return None
 
-        # HARD TIER 1 INSTITUTIONAL A+ CONFLUENCE GATEKEEPER
+        # HARD TIER 1 & TIER 2 QUALITY GATEKEEPER
         tier_badge_str = str(sig.get("tier_badge", "")).upper()
-        if "TIER 1" not in tier_badge_str or "INSTITUTIONAL SMC" not in tier_badge_str:
-            print(f"[🛡️] Auto-Trader Quality Gate: Blocked live execution for {symbol} - Tier '{sig.get('tier_badge')}' does not meet strict A+ Tier 1 Institutional SMC criteria.")
+        is_tier1 = "TIER 1" in tier_badge_str and "INSTITUTIONAL SMC" in tier_badge_str
+        is_tier2_parabolic = "TIER 2" in tier_badge_str and "PARABOLIC" in tier_badge_str
+        if not (is_tier1 or is_tier2_parabolic):
+            print(f"[🛡️] Auto-Trader Quality Gate: Blocked live execution for {symbol} - Tier '{sig.get('tier_badge')}' does not meet strict A+ Tier 1 Institutional SMC or Tier 2 Parabolic criteria.")
             return None
 
         sig_type = str(sig.get("type") or sig.get("signal") or "").upper()
@@ -573,6 +575,10 @@ class BinanceFuturesTrader:
         entry_price = float(sig.get("raw_entry") or sig.get("entry", 0))
         sl_price = float(sig.get("raw_sl") or sig.get("sl", 0))
         tp_price = float(sig.get("raw_tp") or sig.get("tp", 0))
+        stop_dist = abs(entry_price - sl_price)
+
+        is_parabolic = "PARABOLIC" in tier_badge_str
+        max_allowed_drift = 0.035 if is_parabolic else 0.012
 
         # Fetch live Futures market price, guard against adverse drift & mathematically lock 1:3 R:R
         try:
@@ -582,17 +588,17 @@ class BinanceFuturesTrader:
                 if live_price > 0:
                     if entry_price > 0:
                         drift_pct = abs(live_price - entry_price) / entry_price
-                        # If price has drifted >1.2% from planned entry level, block chasing to preserve 1:3 R:R
-                        if drift_pct > 0.012:
-                            print(f"[!] Auto-Trader R:R Guard: Live market price (${live_price}) drifted {drift_pct*100:.2f}% from planned entry (${entry_price}). Chasing blocked to protect strict 1:3 R:R.")
+                        # Guard against excessive adverse drift while allowing high-volatility parabolic entries
+                        if drift_pct > max_allowed_drift:
+                            print(f"[!] Auto-Trader R:R Guard: Live market price (${live_price}) drifted {drift_pct*100:.2f}% from planned entry (${entry_price}) (max {max_allowed_drift*100:.1f}%). Chasing blocked to protect strict 1:3 R:R.")
                             return None
                     entry_price = live_price
                     # Mathematically lock Take Profit to strictly 3.0x Stop Loss distance from actual fill price
                     stop_dist = abs(entry_price - sl_price)
                     if stop_dist > 0:
                         tp_price = (entry_price + (stop_dist * 3.0)) if is_long else (entry_price - (stop_dist * 3.0))
-        except Exception:
-            pass
+        except Exception as e_ticker:
+            print(f"[*] Note: Ticker price fetch failed ({e_ticker}), using planned entry ${entry_price}")
 
         if entry_price <= 0 or sl_price <= 0:
             print(f"[!] Auto-Trader: Invalid entry/SL prices for {symbol}.")
@@ -630,10 +636,23 @@ class BinanceFuturesTrader:
                 sl_price = entry_price + min_stop_dist
                 tp_price = entry_price - (min_stop_dist * 3.0)
 
+        # Determine dynamic leverage & liquidation firewall based on trade type:
+        is_parabolic = "PARABOLIC" in tier_badge_str
+        trade_leverage = self.leverage
+        max_stop_pct = 0.055
+        if is_parabolic:
+            # For Parabolic Shorts with wide stops (>5.5%), use 5x leverage so liquidation is ~17.6% away
+            if (stop_dist / entry_price) > 0.055:
+                trade_leverage = 5
+                max_stop_pct = 0.12
+            else:
+                trade_leverage = 10
+                max_stop_pct = 0.08
+
         # 2. Hard Liquidation Firewall (Never let SL reach or exceed liquidation price):
         # On 10x leverage, liquidation occurs at ~8.8% from entry.
-        # Max allowed SL distance is strictly capped at 5.5% (guaranteeing a 3.3% buffer before liquidation).
-        max_stop_dist = entry_price * min(0.055, 0.80 / max(self.leverage, 1))
+        # On 5x leverage, liquidation occurs at ~17.6% from entry.
+        max_stop_dist = entry_price * min(max_stop_pct, 0.80 / max(trade_leverage, 1))
         if stop_dist > max_stop_dist:
             print(f"[🛡️] Liquidation Firewall: SL distance {stop_dist/entry_price*100:.2f}% exceeds safe limit! Capping SL to {max_stop_dist/entry_price*100:.2f}% (well before liquidation).")
             stop_dist = max_stop_dist
@@ -647,9 +666,9 @@ class BinanceFuturesTrader:
         if stop_dist > 0:
             raw_qty = risk_usdt / stop_dist
         else:
-            raw_qty = (avail_usdt * 0.10 * self.leverage) / entry_price
+            raw_qty = (avail_usdt * 0.10 * trade_leverage) / entry_price
             
-        margin_allocated = (raw_qty * entry_price) / self.leverage
+        margin_allocated = (raw_qty * entry_price) / trade_leverage
         # 2. Dynamic Percentage-Based Margin Cap (Auto-Compounds as Wallet Grows):
         # In a 4-position portfolio, each position is capped at max 10% of Available USDT Margin.
         # This auto-scales dynamically with wallet balance (No manual code changes needed as account grows).
@@ -660,7 +679,7 @@ class BinanceFuturesTrader:
             
         if margin_allocated > max_margin_cap:
             margin_allocated = max_margin_cap
-            raw_qty = (margin_allocated * self.leverage) / entry_price
+            raw_qty = (margin_allocated * trade_leverage) / entry_price
         
         if avail_usdt < 3.0 or margin_allocated < 0.50:
             print(f"[!] Auto-Trader: Insufficient available balance (${avail_usdt:.2f} USDT). Minimum $3.00 required.")
@@ -668,7 +687,7 @@ class BinanceFuturesTrader:
 
         # 3. Enforce ISOLATED margin and leverage FIRST before calculating sizes
         self.set_margin_type_isolated(symbol)
-        self.set_leverage(symbol, self.leverage)
+        self.set_leverage(symbol, trade_leverage)
 
         # Symbol precision rules
         rules = self.get_symbol_rules(symbol)
@@ -704,7 +723,7 @@ class BinanceFuturesTrader:
         })
 
         try:
-            print(f"[🚀] Placing LIVE {side} ({pos_side}) MARKET order for {symbol} | Qty: {order_qty} (Risking ~${risk_usdt:.2f} USDT @ {self.leverage}x)...")
+            print(f"[🚀] Placing LIVE {side} ({pos_side}) MARKET order for {symbol} | Qty: {order_qty} (Risking ~${risk_usdt:.2f} USDT @ {trade_leverage}x)...")
             resp = self.session.post(f"{BASE_URL}/fapi/v1/order", data=entry_params, timeout=10)
             if resp.status_code != 200:
                 print(f"[!] Binance Order Error ({resp.status_code}): {resp.text}")
@@ -748,7 +767,7 @@ class BinanceFuturesTrader:
                 "margin_usdt": margin_allocated,
                 "risk_pct": size_pct,
                 "is_defensive": bool(sig.get("is_defensive")),
-                "leverage": self.leverage,
+                "leverage": trade_leverage,
                 "entry_price": avg_price,
                 "sl_price": sl_formatted,
                 "sl_order_id": sl_order_id,
@@ -785,6 +804,16 @@ class BinanceFuturesTrader:
         if not self.is_live_enabled():
             return False
 
+        # Verify open position actually exists on Binance before attempting to trail
+        pos = self.get_open_position(symbol)
+        if not pos:
+            return False
+        current_pos_qty = abs(float(pos.get("positionAmt", 0.0)))
+        if current_pos_qty <= 0:
+            return False
+
+        actual_qty = qty if (qty and qty <= current_pos_qty) else current_pos_qty
+
         rules = self.get_symbol_rules(symbol)
         if not rules:
             return False
@@ -797,7 +826,7 @@ class BinanceFuturesTrader:
             self.cancel_algo_orders_by_type(symbol, "STOP_MARKET")
             
             # Place new trailed STOP_MARKET via Algo Order service
-            res = self._place_conditional_order(symbol, exit_side, "STOP_MARKET", sl_formatted, pos_side, qty)
+            res = self._place_conditional_order(symbol, exit_side, "STOP_MARKET", sl_formatted, pos_side, actual_qty)
             if res.get("success"):
                 print(f"[🔒] {symbol}: Stop Loss trailed to ${sl_formatted} (ID: {res.get('order_id')})")
                 return True
@@ -846,9 +875,9 @@ class BinanceFuturesTrader:
         try:
             resp = self.session.post(f"{BASE_URL}/fapi/v1/order", data=params, timeout=8)
             if resp.status_code == 200:
-                print(f"[💰] {symbol}: Partial/Full Close ({fraction*100:.0f}%) executed: {qty_to_close}")
-                # If closing 100%, also cancel open normal and algo orders
-                if fraction >= 0.95:
+                is_full_close = (fraction >= 0.95) or (qty_to_close >= current_amt)
+                print(f"[💰] {symbol}: {'Full' if is_full_close else 'Partial'} Close ({qty_to_close}/{current_amt}) executed")
+                if is_full_close:
                     self.cancel_all_symbol_orders(symbol)
                 return True
             else:
