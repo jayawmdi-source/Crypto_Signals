@@ -644,7 +644,7 @@ class BinanceFuturesTrader:
             # For Parabolic Shorts with wide stops (>5.5%), use 5x leverage so liquidation is ~17.6% away
             if (stop_dist / entry_price) > 0.055:
                 trade_leverage = 5
-                max_stop_pct = 0.12
+                max_stop_pct = 0.14
             else:
                 trade_leverage = 10
                 max_stop_pct = 0.08

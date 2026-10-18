@@ -1155,7 +1155,11 @@ def analyze_symbol(symbol, anchored_signal=None, btc_sentiment=None, session_inf
         is_parabolic_pump = (price_change_24h >= 18.0) or (pump_gain_pct >= 22.0)
         is_rsi_exhausted = (rsi_daily >= 68.0) or (rsi_1h >= 68.0) or is_extreme_overbought
         has_resistance_ceiling = (dist_to_resistance_pct <= 3.5) or (sweep_1h.get("has_bear_sweep") and dist_to_resistance_pct <= 5.0)
-        has_bear_choch = choch_data.get("has_bearish_choch") or (choch_15m and choch_15m.get("has_bearish_choch")) or (choch_5m and choch_5m.get("has_bearish_choch"))
+        # Robust Reversal Confirmation: Require 15M/1H CHoCH OR (5M CHoCH with verified Liquidity Sweep / Upper Wick Rejection)
+        has_bear_sweep = bool(sweep_1h.get("has_bear_sweep"))
+        has_15m_1h_choch = bool(choch_data.get("has_bearish_choch")) or bool(choch_15m and choch_15m.get("has_bearish_choch"))
+        has_5m_choch_with_sweep = bool(choch_5m and choch_5m.get("has_bearish_choch") and has_bear_sweep)
+        has_bear_choch = has_15m_1h_choch or has_5m_choch_with_sweep
         is_btc_pumping = btc_sentiment and (btc_sentiment.get("is_pumping") or "PUMP" in str(btc_sentiment.get("status", "")))
 
         is_a_plus_parabolic_short = is_parabolic_pump and is_rsi_exhausted and has_resistance_ceiling and has_bear_choch
@@ -1172,25 +1176,34 @@ def analyze_symbol(symbol, anchored_signal=None, btc_sentiment=None, session_inf
                 trade_setup = "Parabolic Short Blocked: Inside 1H Demand Block"
                 reasons.append("⚠️ SMC Shield: Blocked short directly into 1H Demand Block / Bullish FVG (<2.5% underneath).")
             else:
-                peak_ref = max(choch_data.get("recent_high", entry * 1.01), entry * 1.01)
-                sl = peak_ref * 1.005
+                peak_candidates = [
+                    entry * 1.015,
+                    choch_data.get("recent_high"),
+                    choch_15m.get("recent_high") if choch_15m else None,
+                    choch_5m.get("recent_high") if choch_5m else None,
+                    sweep_1h.get("sweep_price") if (sweep_1h and sweep_1h.get("has_bear_sweep")) else None
+                ]
+                peak_ref = max([p for p in peak_candidates if p is not None])
+                # Solid Volatility Cushion: Prevent retail wick-outs from Judas sweeps (2.5% buffer or 1.2x 1H ATR)
+                peak_cushion = max(peak_ref * 0.025, 1.2 * atr_1h)
+                sl = peak_ref + peak_cushion
                 risk = sl - entry
-                if risk / entry < 0.030:
-                    sl = entry * 1.030
+                if risk / entry < 0.040:
+                    sl = entry * 1.040
                     risk = sl - entry
                 risk_pct = risk / entry
 
-                if risk_pct <= 0.12:
+                if risk_pct <= 0.14:
                     signal_type = "SELL / SHORT"
                     tier_badge = "⚡ TIER 2: A++ PARABOLIC EXHAUSTION"
-                    trade_setup = "A++ Parabolic Resistance Exhaustion Reversal (5M/15M CHoCH)"
+                    trade_setup = "A++ Parabolic Resistance Exhaustion Reversal (15M/1H CHoCH)"
                     choch_badge = "Bearish CHoCH Confirmed 🔴"
                     trailing_sl = sl
                     tp1 = entry - (risk * 1.5)
                     tp2 = entry - (risk * 2.0)
                     tp = entry - (risk * 3.0)
                     reasons.append(f"⚡ Parabolic Exhaustion: Pump +{max(price_change_24h, pump_gain_pct):.1f}% into Daily Resistance ${fmt_price(nearest_resistance)}")
-                    reasons.append(f"Confirmed Bearish Structure Breakdown (CHoCH) with SL at Peak ${fmt_price(sl)} (Risk: {risk_pct*100:.1f}%)")
+                    reasons.append(f"Confirmed Bearish Structure Breakdown (CHoCH) with SL at Peak + Cushion ${fmt_price(sl)} (Risk: {risk_pct*100:.1f}%)")
                     if sweep_1h.get("has_bear_sweep"):
                         reasons.append(f"⚡ Buy-Side Liquidity Swept: {sweep_1h['details']}")
                     if bear_fvg_1h:
@@ -1198,8 +1211,8 @@ def analyze_symbol(symbol, anchored_signal=None, btc_sentiment=None, session_inf
                 else:
                     signal_type = "WATCHLIST"
                     tier_badge = "🛡️ RISK GEOMETRY WATCHLIST"
-                    trade_setup = f"Trade Disqualified: Parabolic Stop Loss too wide ({risk_pct*100:.1f}% > 12.0%)"
-                    reasons.append(f"⚠️ Risk Geometry Shield: Parabolic stop requires {risk_pct*100:.1f}% risk (>12% max limit).")
+                    trade_setup = f"Trade Disqualified: Parabolic Stop Loss too wide ({risk_pct*100:.1f}% > 14.0%)"
+                    reasons.append(f"⚠️ Risk Geometry Shield: Parabolic stop requires {risk_pct*100:.1f}% risk (>14% max limit).")
 
         elif is_extreme_oversold and choch_data["has_bullish_choch"]:
             macro_trend_conflict = (mtf_4h["bias"] == "BEARISH") or (not ema_bullish)
@@ -1680,8 +1693,8 @@ def analyze_symbol(symbol, anchored_signal=None, btc_sentiment=None, session_inf
                 if dist_to_ob_pct >= 0.15:
                     l_entry = target_limit_price
                     l_sl = sl
-                    # Enforce Dynamic ATR & Minimum 3.0% / Max 5.5% (or 12% for Parabolic) Buffer on Limit Setup
-                    max_limit_sl_pct = 0.12 if "PARABOLIC" in str(tier_badge).upper() else 0.055
+                    # Enforce Dynamic ATR & Minimum 3.0% / Max 5.5% (or 14% for Parabolic) Buffer on Limit Setup
+                    max_limit_sl_pct = 0.14 if "PARABOLIC" in str(tier_badge).upper() else 0.055
                     if (l_sl - l_entry) / l_entry < 0.030:
                         l_sl = l_entry * 1.030
                     elif (l_sl - l_entry) / l_entry > max_limit_sl_pct:
@@ -1708,10 +1721,10 @@ def analyze_symbol(symbol, anchored_signal=None, btc_sentiment=None, session_inf
                         }
 
         # HARD LIQUIDATION FIREWALL:
-        # On 10x leverage, liquidation is ~8.8% away. If natural structural stop loss exceeds 5.5% (or 12% on 5x Parabolic),
+        # On 10x leverage, liquidation is ~8.8% away. If natural structural stop loss exceeds 5.5% (or 14% on 5x Parabolic),
         # DISQUALIFY the trade rather than clamping the stop loss into the liquidity hunt zone!
         if signal_type in ["BUY / LONG", "SELL / SHORT"] and not anchored_signal and entry > 0:
-            max_sl_pct = 0.12 if "PARABOLIC" in str(tier_badge).upper() else 0.055
+            max_sl_pct = 0.14 if "PARABOLIC" in str(tier_badge).upper() else 0.055
             actual_sl_pct = abs(entry - sl) / entry
             if actual_sl_pct > max_sl_pct:
                 signal_type = "WATCHLIST"
