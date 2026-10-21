@@ -837,7 +837,11 @@ def verify_retest_confirmation(symbol, sig_type, l_entry, sl_price, is_parabolic
     ch_15m = detect_15m_choch(klines_15m)
     ch_5m = detect_5m_choch(klines_5m) if klines_5m else {}
     
-    has_choch = (ch_15m.get("has_bullish_choch") or ch_5m.get("has_bullish_choch")) if is_long else (ch_15m.get("has_bearish_choch") or ch_5m.get("has_bearish_choch"))
+    if is_parabolic:
+        # Parabolic Exhaustion: Strictly disallow 5M micro-CHoCH; require 15M structure breakdown
+        has_choch = ch_15m.get("has_bearish_choch")
+    else:
+        has_choch = (ch_15m.get("has_bullish_choch") or ch_5m.get("has_bullish_choch")) if is_long else (ch_15m.get("has_bearish_choch") or ch_5m.get("has_bearish_choch"))
     if has_choch:
         return True, "Lower-timeframe (15M/5M) CHoCH confirmed"
 
@@ -963,12 +967,14 @@ def analyze_symbol(symbol, anchored_signal=None, btc_sentiment=None, session_inf
     if resistances_below:
         candidate_res = max(resistances_below)
         breakout_valid = False
-        for idx in range(max(1, len(close_prices)-7), len(close_prices)):
+        for idx in range(max(1, len(close_prices)-4), len(close_prices)):
             if close_prices[idx] > candidate_res and close_prices[idx-1] <= candidate_res:
-                if volumes[idx] >= vol_sma_20 * 1.05:
+                # Require genuine institutional breakout volume expansion (at least 1.30x of 20-day SMA)
+                if volumes[idx] >= vol_sma_20 * 1.30:
                     breakout_valid = True
                     break
-        if breakout_valid:
+        # Retest Holding Guard: Current price must actively hold above the broken resistance
+        if breakout_valid and current_price >= candidate_res * 0.995:
             dist_above = ((current_price - candidate_res) / current_price) * 100
             if 0.1 <= dist_above <= 2.5:
                 is_bull_sr_flip = True
@@ -981,12 +987,14 @@ def analyze_symbol(symbol, anchored_signal=None, btc_sentiment=None, session_inf
     if supports_above:
         candidate_sup = min(supports_above)
         breakdown_valid = False
-        for idx in range(max(1, len(close_prices)-7), len(close_prices)):
+        for idx in range(max(1, len(close_prices)-4), len(close_prices)):
             if close_prices[idx] < candidate_sup and close_prices[idx-1] >= candidate_sup:
-                if volumes[idx] >= vol_sma_20 * 1.05:
+                # Require genuine institutional breakdown volume expansion (at least 1.30x of 20-day SMA)
+                if volumes[idx] >= vol_sma_20 * 1.30:
                     breakdown_valid = True
                     break
-        if breakdown_valid:
+        # Retest Holding Guard: Current price must actively hold below the broken support
+        if breakdown_valid and current_price <= candidate_sup * 1.005:
             dist_below = ((candidate_sup - current_price) / current_price) * 100
             if 0.1 <= dist_below <= 2.5:
                 is_bear_sr_flip = True
@@ -1155,11 +1163,13 @@ def analyze_symbol(symbol, anchored_signal=None, btc_sentiment=None, session_inf
         is_parabolic_pump = (price_change_24h >= 18.0) or (pump_gain_pct >= 22.0)
         is_rsi_exhausted = (rsi_daily >= 68.0) or (rsi_1h >= 68.0) or is_extreme_overbought
         has_resistance_ceiling = (dist_to_resistance_pct <= 3.5) or (sweep_1h.get("has_bear_sweep") and dist_to_resistance_pct <= 5.0)
-        # Robust Reversal Confirmation: Require 15M/1H CHoCH OR (5M CHoCH with verified Liquidity Sweep / Upper Wick Rejection)
+        # Strict Institutional Reversal Confirmation: Require TRUE 1H Bearish CHoCH (Structure Breakdown)
+        # Eliminate premature 5M/15M noise that gets wiped out by secondary short squeezes on hyper-pumpers.
+        has_1h_bear_choch = bool(choch_data.get("has_bearish_choch"))
         has_bear_sweep = bool(sweep_1h.get("has_bear_sweep"))
-        has_15m_1h_choch = bool(choch_data.get("has_bearish_choch")) or bool(choch_15m and choch_15m.get("has_bearish_choch"))
-        has_5m_choch_with_sweep = bool(choch_5m and choch_5m.get("has_bearish_choch") and has_bear_sweep)
-        has_bear_choch = has_15m_1h_choch or has_5m_choch_with_sweep
+        # 15M CHoCH is only permitted if accompanied by an explicit 1H Buy-Side Liquidity Sweep AND a fresh 1H Bearish FVG
+        has_15m_confirmed_reversal = bool(choch_15m and choch_15m.get("has_bearish_choch") and has_bear_sweep and bear_fvg_1h)
+        has_bear_choch = has_1h_bear_choch or has_15m_confirmed_reversal
         is_btc_pumping = btc_sentiment and (btc_sentiment.get("is_pumping") or "PUMP" in str(btc_sentiment.get("status", "")))
 
         is_a_plus_parabolic_short = is_parabolic_pump and is_rsi_exhausted and has_resistance_ceiling and has_bear_choch
@@ -1196,7 +1206,7 @@ def analyze_symbol(symbol, anchored_signal=None, btc_sentiment=None, session_inf
                 if risk_pct <= 0.14:
                     signal_type = "SELL / SHORT"
                     tier_badge = "⚡ TIER 2: A++ PARABOLIC EXHAUSTION"
-                    trade_setup = "A++ Parabolic Resistance Exhaustion Reversal (15M/1H CHoCH)"
+                    trade_setup = "A++ Parabolic Resistance Exhaustion Reversal (Strict 1H CHoCH)"
                     choch_badge = "Bearish CHoCH Confirmed 🔴"
                     trailing_sl = sl
                     tp1 = entry - (risk * 1.5)
@@ -1241,8 +1251,8 @@ def analyze_symbol(symbol, anchored_signal=None, btc_sentiment=None, session_inf
                 if risk / entry < 0.030:
                     sl = entry * 0.970
                     risk = entry - sl
-                elif risk / entry > 0.055:
-                    sl = entry * 0.945
+                elif risk / entry > 0.080:
+                    sl = entry * 0.920
                     risk = entry - sl
                 trailing_sl = sl
                 tp1 = entry + (risk * 1.5)
@@ -1271,10 +1281,11 @@ def analyze_symbol(symbol, anchored_signal=None, btc_sentiment=None, session_inf
             # 1H Liquidity Sweep, 1H Demand Order Block, 1H Bullish FVG, or verified S/R Flip!
             has_institutional_footprint = bool(sweep_1h["has_bull_sweep"] or bull_fvg_1h or bull_ob_1h or is_bull_sr_flip)
 
-            # 4. Fresh & Relevant Confluence Check for S/R Flips (Reject Stale/Zombie FVGs):
+            # 4. Fresh & Relevant Confluence Check for S/R Flips (Reject Stale/Zombie FVGs and Low-Volume Chop):
             fresh_bull_fvg = bull_fvg_1h and (bull_fvg_1h.get('age_hours', 99) <= 24) and (bull_fvg_1h.get('is_testing') or (abs(entry - bull_fvg_1h['top']) / entry <= 0.025))
             fresh_bull_ob = bull_ob_1h and (bull_ob_1h.get('age_hours', 99) <= 36) and (bull_ob_1h.get('is_testing') or (abs(entry - bull_ob_1h['top']) / entry <= 0.025))
-            sr_flip_lacks_confluence = is_bull_sr_flip and not (sweep_1h["has_bull_sweep"] or fresh_bull_fvg or fresh_bull_ob)
+            # S/R Flip requires verified SMC footprint AND non-decayed daily volume (vol_proj_ratio >= 1.0)
+            sr_flip_lacks_confluence = is_bull_sr_flip and (not (sweep_1h["has_bull_sweep"] or fresh_bull_fvg or fresh_bull_ob) or (vol_proj_ratio < 1.0))
 
             # 5. Weekend / Asian Session Low Liquidity Shield:
             is_weekend = now_utc.weekday() >= 5
@@ -1313,14 +1324,14 @@ def analyze_symbol(symbol, anchored_signal=None, btc_sentiment=None, session_inf
                 if bull_ob_1h and bull_ob_1h['bottom'] < entry:
                     base_support = min(base_support, bull_ob_1h['bottom'])
                     
-                # Dynamic ATR Volatility Stop Loss
+                # Dynamic ATR Volatility Stop Loss (Relaxed up to 8.0% to allow real structural support to breathe)
                 sl = base_support - (2.8 * atr_1h)
                 risk = entry - sl
                 if risk / entry < 0.030:
                     sl = entry * 0.970
                     risk = entry - sl
-                elif risk / entry > 0.055:
-                    sl = entry * 0.945
+                elif risk / entry > 0.080:
+                    sl = entry * 0.920
                     risk = entry - sl
                 trailing_sl = sl
                 tp1 = entry + (risk * 1.5)
@@ -1352,7 +1363,8 @@ def analyze_symbol(symbol, anchored_signal=None, btc_sentiment=None, session_inf
             # 4. Fresh & Relevant Confluence Check for S/R Flips:
             fresh_bear_fvg = bear_fvg_1h and (bear_fvg_1h.get('age_hours', 99) <= 24) and (bear_fvg_1h.get('is_testing') or (abs(entry - bear_fvg_1h['bottom']) / entry <= 0.025))
             fresh_bear_ob = bear_ob_1h and (bear_ob_1h.get('age_hours', 99) <= 36) and (bear_ob_1h.get('is_testing') or (abs(entry - bear_ob_1h['bottom']) / entry <= 0.025))
-            sr_flip_lacks_confluence = is_bear_sr_flip and not (sweep_1h["has_bear_sweep"] or fresh_bear_fvg or fresh_bear_ob)
+            # S/R Flip requires verified SMC footprint AND non-decayed daily volume (vol_proj_ratio >= 1.0)
+            sr_flip_lacks_confluence = is_bear_sr_flip and (not (sweep_1h["has_bear_sweep"] or fresh_bear_fvg or fresh_bear_ob) or (vol_proj_ratio < 1.0))
 
             # 5. Weekend / Asian Session Low Liquidity Shield:
             is_weekend = now_utc.weekday() >= 5
@@ -1388,14 +1400,14 @@ def analyze_symbol(symbol, anchored_signal=None, btc_sentiment=None, session_inf
                 if bear_ob_1h and bear_ob_1h['top'] > entry:
                     base_res = max(base_res, bear_ob_1h['top'])
                     
-                # Dynamic ATR Volatility Stop Loss
+                # Dynamic ATR Volatility Stop Loss (Relaxed up to 8.0% to allow real structural resistance to breathe)
                 sl = base_res + (2.8 * atr_1h)
                 risk = sl - entry
                 if risk / entry < 0.030:
                     sl = entry * 1.030
                     risk = sl - entry
-                elif risk / entry > 0.055:
-                    sl = entry * 1.055
+                elif risk / entry > 0.080:
+                    sl = entry * 1.080
                     risk = sl - entry
                 trailing_sl = sl
                 tp1 = entry - (risk * 1.5)
@@ -1445,7 +1457,7 @@ def analyze_symbol(symbol, anchored_signal=None, btc_sentiment=None, session_inf
                         if risk / entry < 0.030:
                             sl = entry * 0.970
                             risk = entry - sl
-                        if (risk / entry) <= 0.055:
+                        if (risk / entry) <= 0.080:
                             signal_type = "BUY / LONG"
                             tier_badge = "⚡ ASIAN RANGE SWEEP"
                             trade_setup = "London Judas Sweep of Asian Low (Liquidity Grab Reversal)"
@@ -1467,7 +1479,7 @@ def analyze_symbol(symbol, anchored_signal=None, btc_sentiment=None, session_inf
                         if risk / entry < 0.030:
                             sl = entry * 1.030
                             risk = sl - entry
-                        if (risk / entry) <= 0.055:
+                        if (risk / entry) <= 0.080:
                             signal_type = "SELL / SHORT"
                             tier_badge = "⚡ ASIAN RANGE SWEEP"
                             trade_setup = "London Judas Sweep of Asian High (Liquidity Grab Reversal)"
@@ -1652,11 +1664,11 @@ def analyze_symbol(symbol, anchored_signal=None, btc_sentiment=None, session_inf
                 if dist_to_ob_pct >= 0.15:
                     l_entry = target_limit_price
                     l_sl = sl
-                    # Enforce Dynamic ATR & Minimum 3.0% / Max 5.5% Buffer on Limit Setup
+                    # Enforce Dynamic ATR & Minimum 3.0% / Max 8.0% Buffer on Limit Setup
                     if (l_entry - l_sl) / l_entry < 0.030:
                         l_sl = l_entry * 0.970
-                    elif (l_entry - l_sl) / l_entry > 0.055:
-                        l_sl = l_entry * 0.945
+                    elif (l_entry - l_sl) / l_entry > 0.080:
+                        l_sl = l_entry * 0.920
                     l_risk = l_entry - l_sl
                     if l_risk > 0 and (l_risk / l_entry) >= 0.015:
                         l_tp1 = l_entry + (l_risk * 1.5)
@@ -1693,8 +1705,8 @@ def analyze_symbol(symbol, anchored_signal=None, btc_sentiment=None, session_inf
                 if dist_to_ob_pct >= 0.15:
                     l_entry = target_limit_price
                     l_sl = sl
-                    # Enforce Dynamic ATR & Minimum 3.0% / Max 5.5% (or 14% for Parabolic) Buffer on Limit Setup
-                    max_limit_sl_pct = 0.14 if "PARABOLIC" in str(tier_badge).upper() else 0.055
+                    # Enforce Dynamic ATR & Minimum 3.0% / Max 8.0% (or 14% for Parabolic) Buffer on Limit Setup
+                    max_limit_sl_pct = 0.14 if "PARABOLIC" in str(tier_badge).upper() else 0.080
                     if (l_sl - l_entry) / l_entry < 0.030:
                         l_sl = l_entry * 1.030
                     elif (l_sl - l_entry) / l_entry > max_limit_sl_pct:
@@ -1724,7 +1736,7 @@ def analyze_symbol(symbol, anchored_signal=None, btc_sentiment=None, session_inf
         # On 10x leverage, liquidation is ~8.8% away. If natural structural stop loss exceeds 5.5% (or 14% on 5x Parabolic),
         # DISQUALIFY the trade rather than clamping the stop loss into the liquidity hunt zone!
         if signal_type in ["BUY / LONG", "SELL / SHORT"] and not anchored_signal and entry > 0:
-            max_sl_pct = 0.14 if "PARABOLIC" in str(tier_badge).upper() else 0.055
+            max_sl_pct = 0.14 if "PARABOLIC" in str(tier_badge).upper() else 0.080
             actual_sl_pct = abs(entry - sl) / entry
             if actual_sl_pct > max_sl_pct:
                 signal_type = "WATCHLIST"

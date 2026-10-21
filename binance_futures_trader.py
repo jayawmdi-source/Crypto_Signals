@@ -645,18 +645,27 @@ class BinanceFuturesTrader:
                 sl_price = entry_price + min_stop_dist
                 tp_price = entry_price - (min_stop_dist * 3.0)
 
-        # Determine dynamic leverage & liquidation firewall based on trade type:
+        # Determine dynamic leverage & liquidation firewall based on trade type and structural stop distance:
         is_parabolic = "PARABOLIC" in tier_badge_str
-        trade_leverage = self.leverage
-        max_stop_pct = 0.055
+        stop_dist_ratio = (stop_dist / entry_price) if entry_price > 0 else 0.030
+
         if is_parabolic:
-            # For Parabolic Shorts with wide stops (>5.5%), use 5x leverage so liquidation is ~17.6% away
-            if (stop_dist / entry_price) > 0.055:
+            # For Parabolic Shorts with wide stops, use 5x to 7x leverage
+            if stop_dist_ratio > 0.080:
                 trade_leverage = 5
                 max_stop_pct = 0.14
             else:
-                trade_leverage = 10
-                max_stop_pct = 0.08
+                trade_leverage = 7
+                max_stop_pct = 0.080
+        else:
+            # Standard Tier 1 SMC: Allow true structural stops up to 8.0% to breathe without wick-outs
+            max_stop_pct = 0.080
+            if stop_dist_ratio > 0.050:
+                # Dynamic leverage: 7x allows safe structural stops up to 8.0% (liquidation ~12.8% away)
+                trade_leverage = 7
+            else:
+                # Tight stops <= 5.0% use standard 10x leverage (liquidation ~9.0% away)
+                trade_leverage = self.leverage or 10
 
         # 2. Hard Liquidation Firewall (Never let SL reach or exceed liquidation price):
         # On 10x leverage, liquidation occurs at ~8.8% from entry.
