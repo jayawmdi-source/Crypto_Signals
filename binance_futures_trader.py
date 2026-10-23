@@ -549,12 +549,18 @@ class BinanceFuturesTrader:
             print(f"[!] Auto-Trader Risk Shield: Maximum {max_active} positions cap reached ({len(open_positions)}/{max_active}). Skipping execution for {symbol}.")
             return None
 
-        # HARD TIER 1 & TIER 2 QUALITY GATEKEEPER
+        # HARD TIER 1 & ASIAN SWEEP QUALITY GATEKEEPER
+        # Strictly allow only Tier 1 Institutional SMC and Asian Range Judas Sweeps.
+        # Toxic S/R Flips and Parabolic Shorts are strictly blocked from real capital.
         tier_badge_str = str(sig.get("tier_badge", "")).upper()
+        setup_str = str(sig.get("setup", "")).upper()
         is_tier1 = "TIER 1" in tier_badge_str and "INSTITUTIONAL SMC" in tier_badge_str
-        is_tier2_parabolic = "TIER 2" in tier_badge_str and "PARABOLIC" in tier_badge_str
-        if not (is_tier1 or is_tier2_parabolic):
-            print(f"[🛡️] Auto-Trader Quality Gate: Blocked live execution for {symbol} - Tier '{sig.get('tier_badge')}' does not meet strict A+ Tier 1 Institutional SMC or Tier 2 Parabolic criteria.")
+        is_asian_sweep = ("ASIAN RANGE SWEEP" in tier_badge_str) or ("JUDAS" in setup_str)
+        is_toxic_sr_flip = ("S/R FLIP" in setup_str) or ("BREAKOUT & RETEST" in setup_str) or ("BREAKDOWN & RETEST" in setup_str)
+        is_parabolic = ("PARABOLIC" in tier_badge_str) or ("PARABOLIC" in setup_str)
+
+        if is_toxic_sr_flip or is_parabolic or not (is_tier1 or is_asian_sweep):
+            print(f"[🛡️] Auto-Trader Quality Gate: Blocked live execution for {symbol} - Tier '{sig.get('tier_badge')}' / Setup '{sig.get('setup')}' blocked from real Binance execution.")
             return None
 
         sig_type = str(sig.get("type") or sig.get("signal") or "").upper()
@@ -563,7 +569,15 @@ class BinanceFuturesTrader:
         exit_side = "SELL" if is_long else "BUY"
         pos_side = ("LONG" if is_long else "SHORT") if self.is_hedge_mode else "BOTH"
 
-        # Dynamic Multi-Timeframe Alignment: Allow 1H structural reversals even if 4H is counter-trend
+        # Strict Multi-Timeframe Alignment: Never allow trades that counter the 4H Macro Trend
+        mtf_status = str(sig.get("mtf_status", "")).upper()
+        if is_long and mtf_status == "BEARISH":
+            print(f"[!] Auto-Trader Safety: Blocked LONG execution on {symbol} - 4H Macro Trend is BEARISH.")
+            return None
+        if not is_long and mtf_status == "BULLISH":
+            print(f"[!] Auto-Trader Safety: Blocked SHORT execution on {symbol} - 4H Macro Trend is BULLISH.")
+            return None
+
         rsi_1h = float(sig.get("rsi_1h") or 50.0)
         if is_long and rsi_1h > 70.0:
             print(f"[!] Auto-Trader Safety: Blocked LONG execution on {symbol} - 1H RSI is overbought ({rsi_1h:.1f}).")
@@ -602,10 +616,10 @@ class BinanceFuturesTrader:
                             print(f"[!] Auto-Trader R:R Guard: Live market price (${live_price}) drifted {drift_pct*100:.2f}% from planned entry (${entry_price}) (max {max_allowed_drift*100:.1f}%). Chasing blocked to protect strict 1:3 R:R.")
                             return None
                     entry_price = live_price
-                    # Mathematically lock Take Profit to strictly 3.0x Stop Loss distance from actual fill price
                     stop_dist = abs(entry_price - sl_price)
-                    if stop_dist > 0:
-                        tp_price = (entry_price + (stop_dist * 3.0)) if is_long else (entry_price - (stop_dist * 3.0))
+                    # Direct 50% ROI Take Profit Lock (+5.0% price distance from entry @ 10x leverage)
+                    roi_tp_dist = entry_price * (0.50 / max(trade_leverage, 1))
+                    tp_price = (entry_price + roi_tp_dist) if is_long else (entry_price - roi_tp_dist)
         except Exception as e_ticker:
             print(f"[*] Note: Ticker price fetch failed ({e_ticker}), using planned entry ${entry_price}")
 
@@ -667,19 +681,19 @@ class BinanceFuturesTrader:
                 # Tight stops <= 5.0% use standard 10x leverage (liquidation ~9.0% away)
                 trade_leverage = self.leverage or 10
 
-        # 2. Hard Liquidation Firewall (Never let SL reach or exceed liquidation price):
-        # On 10x leverage, liquidation occurs at ~8.8% from entry.
-        # On 5x leverage, liquidation occurs at ~17.6% from entry.
-        max_stop_dist = entry_price * min(max_stop_pct, 0.80 / max(trade_leverage, 1))
+        # 2. Hard Risk & Liquidation Firewall:
+        # Cap structural SL to max 5.0% (50% ROI risk @ 10x leverage)
+        max_stop_dist = entry_price * min(0.050, 0.80 / max(trade_leverage, 1))
         if stop_dist > max_stop_dist:
-            print(f"[🛡️] Liquidation Firewall: SL distance {stop_dist/entry_price*100:.2f}% exceeds safe limit! Capping SL to {max_stop_dist/entry_price*100:.2f}% (well before liquidation).")
+            print(f"[🛡️] Risk Firewall: SL distance {stop_dist/entry_price*100:.2f}% capped to safe 5.0% limit.")
             stop_dist = max_stop_dist
             if side == "BUY" or pos_side == "LONG":
                 sl_price = entry_price - max_stop_dist
-                tp_price = entry_price + (max_stop_dist * 3.0)
             else:
                 sl_price = entry_price + max_stop_dist
-                tp_price = entry_price - (max_stop_dist * 3.0)
+        # Lock Take Profit strictly to +50% ROI (+5.0% price distance from entry @ 10x leverage)
+        roi_tp_dist = entry_price * (0.50 / max(trade_leverage, 1))
+        tp_price = (entry_price + roi_tp_dist) if (side == "BUY" or pos_side == "LONG") else (entry_price - roi_tp_dist)
 
         if stop_dist > 0:
             raw_qty = risk_usdt / stop_dist

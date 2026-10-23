@@ -1204,14 +1204,15 @@ def analyze_symbol(symbol, anchored_signal=None, btc_sentiment=None, session_inf
                 risk_pct = risk / entry
 
                 if risk_pct <= 0.14:
-                    signal_type = "SELL / SHORT"
-                    tier_badge = "⚡ TIER 2: A++ PARABOLIC EXHAUSTION"
-                    trade_setup = "A++ Parabolic Resistance Exhaustion Reversal (Strict 1H CHoCH)"
+                    # Demote Parabolic Reversal to Watchlist Only (Blocked from live execution to eliminate squeeze losses)
+                    signal_type = "WATCHLIST"
+                    tier_badge = "⚡ TIER 2: A++ PARABOLIC EXHAUSTION (WATCHLIST)"
+                    trade_setup = "Parabolic Resistance Exhaustion Reversal (Watchlist Alert Only)"
                     choch_badge = "Bearish CHoCH Confirmed 🔴"
                     trailing_sl = sl
-                    tp1 = entry - (risk * 1.5)
-                    tp2 = entry - (risk * 2.0)
-                    tp = entry - (risk * 3.0)
+                    tp = entry * 0.950
+                    tp1 = tp
+                    tp2 = tp
                     reasons.append(f"⚡ Parabolic Exhaustion: Pump +{max(price_change_24h, pump_gain_pct):.1f}% into Daily Resistance ${fmt_price(nearest_resistance)}")
                     reasons.append(f"Confirmed Bearish Structure Breakdown (CHoCH) with SL at Peak + Cushion ${fmt_price(sl)} (Risk: {risk_pct*100:.1f}%)")
                     if sweep_1h.get("has_bear_sweep"):
@@ -1268,7 +1269,13 @@ def analyze_symbol(symbol, anchored_signal=None, btc_sentiment=None, session_inf
         # ---------------------------------------------------------------------
         # TIER 1: INSTITUTIONAL SMC (4H Trend + Daily Line S&R + 1H OB/FVG)
         # ---------------------------------------------------------------------
-        elif ema_bullish and mtf_4h["bias"] == "BULLISH" and (dist_to_support_pct <= 3.5 or is_bull_sr_flip) and (38 <= rsi_daily <= 68):
+        elif is_bull_sr_flip and dist_to_support_pct > 3.5:
+            # S/R Flip Breakout demoted strictly to Watchlist to eliminate Bull Trap losses
+            signal_type = "WATCHLIST"
+            tier_badge = "WATCHLIST"
+            trade_setup = "Watchlist: Bullish S/R Flip Breakout (Awaiting Liquidity Sweep)"
+            reasons.append("⚠️ SMC Quality Filter: S/R Flip Breakout demoted to Watchlist to prevent Whale Bull Trap.")
+        elif ema_bullish and mtf_4h["bias"] == "BULLISH" and (dist_to_support_pct <= 3.5) and (38 <= rsi_daily <= 68):
             # 1. Supply Conflict Shield: Cannot Long directly into 1H Supply OB or Bearish FVG (or <2.5% overhead)
             btc_blocks_long = btc_sentiment and not btc_sentiment.get("allow_longs", True) and symbol != "BTCUSDT"
 
@@ -1318,25 +1325,26 @@ def analyze_symbol(symbol, anchored_signal=None, btc_sentiment=None, session_inf
             else:
                 signal_type = "BUY / LONG"
                 tier_badge = "⭐ TIER 1: INSTITUTIONAL SMC"
-                trade_setup = "Daily Line Support Bounce + 1H Demand OB" if not is_bull_sr_flip else "Confirmed S/R Flip Breakout & Retest"
+                trade_setup = "Daily Line Support Bounce + 1H Demand OB"
                 
-                base_support = bull_flip_lvl if is_bull_sr_flip else nearest_support
+                base_support = nearest_support
                 if bull_ob_1h and bull_ob_1h['bottom'] < entry:
                     base_support = min(base_support, bull_ob_1h['bottom'])
                     
-                # Dynamic ATR Volatility Stop Loss (Relaxed up to 8.0% to allow real structural support to breathe)
+                # Dynamic ATR Volatility Stop Loss (Safe structural stop capped at 4.0% - 5.0%)
                 sl = base_support - (2.8 * atr_1h)
                 risk = entry - sl
                 if risk / entry < 0.030:
                     sl = entry * 0.970
                     risk = entry - sl
-                elif risk / entry > 0.080:
-                    sl = entry * 0.920
+                elif risk / entry > 0.050:
+                    sl = entry * 0.950
                     risk = entry - sl
                 trailing_sl = sl
-                tp1 = entry + (risk * 1.5)
-                tp2 = entry + (risk * 2.0)
-                tp = entry + (risk * 3.0)
+                # Direct 50% ROI Take Profit Lock (+5.0% price distance from entry @ 10x leverage)
+                tp = entry * 1.050
+                tp1 = tp
+                tp2 = tp
                 
                 reasons.append(f"4H Macro Bias: {mtf_4h['bias']} + Daily 20/50 EMA Bullish")
                 reasons.append(f"🏷️ Institutional Discount Zone: Price in Wholesale Discount Area (Fib 50%-61.8%)")
@@ -1348,7 +1356,13 @@ def analyze_symbol(symbol, anchored_signal=None, btc_sentiment=None, session_inf
                 if bull_ob_1h:
                     ob_info_str = f"Bullish 1H OB [${fmt_price(bull_ob_1h['bottom'])} - ${fmt_price(bull_ob_1h['top'])}]"
 
-        elif (not ema_bullish) and mtf_4h["bias"] == "BEARISH" and (dist_to_resistance_pct <= 3.5 or is_bear_sr_flip) and (32 <= rsi_daily <= 62):
+        elif is_bear_sr_flip and dist_to_resistance_pct > 3.5:
+            # S/R Flip Breakdown demoted strictly to Watchlist to eliminate Bear Trap losses
+            signal_type = "WATCHLIST"
+            tier_badge = "WATCHLIST"
+            trade_setup = "Watchlist: Bearish S/R Flip Breakdown (Awaiting Liquidity Sweep)"
+            reasons.append("⚠️ SMC Quality Filter: S/R Flip Breakdown demoted to Watchlist to prevent Whale Bear Trap.")
+        elif (not ema_bullish) and mtf_4h["bias"] == "BEARISH" and (dist_to_resistance_pct <= 3.5) and (32 <= rsi_daily <= 62):
             # 1. Demand Conflict Shield: Cannot Short directly into 1H Demand OB or Bullish FVG (or <2.5% underneath)
             btc_blocks_short = btc_sentiment and not btc_sentiment.get("allow_shorts", True) and symbol != "BTCUSDT"
 
@@ -1394,25 +1408,26 @@ def analyze_symbol(symbol, anchored_signal=None, btc_sentiment=None, session_inf
             else:
                 signal_type = "SELL / SHORT"
                 tier_badge = "⭐ TIER 1: INSTITUTIONAL SMC"
-                trade_setup = "Daily Line Resistance Rejection + 1H Supply OB" if not is_bear_sr_flip else "Confirmed S/R Flip Breakdown & Retest"
+                trade_setup = "Daily Line Resistance Rejection + 1H Supply OB"
                 
-                base_res = bear_flip_lvl if is_bear_sr_flip else nearest_resistance
+                base_res = nearest_resistance
                 if bear_ob_1h and bear_ob_1h['top'] > entry:
                     base_res = max(base_res, bear_ob_1h['top'])
                     
-                # Dynamic ATR Volatility Stop Loss (Relaxed up to 8.0% to allow real structural resistance to breathe)
+                # Dynamic ATR Volatility Stop Loss (Safe structural stop capped at 4.0% - 5.0%)
                 sl = base_res + (2.8 * atr_1h)
                 risk = sl - entry
                 if risk / entry < 0.030:
                     sl = entry * 1.030
                     risk = sl - entry
-                elif risk / entry > 0.080:
-                    sl = entry * 1.080
+                elif risk / entry > 0.050:
+                    sl = entry * 1.050
                     risk = sl - entry
                 trailing_sl = sl
-                tp1 = entry - (risk * 1.5)
-                tp2 = entry - (risk * 2.0)
-                tp = entry - (risk * 3.0)
+                # Direct 50% ROI Take Profit Lock (-5.0% price distance from entry @ 10x leverage)
+                tp = entry * 0.950
+                tp1 = tp
+                tp2 = tp
                 
                 reasons.append(f"4H Macro Bias: {mtf_4h['bias']} + Daily 20/50 EMA Bearish")
                 reasons.append(f"🏷️ Institutional Premium Zone: Price in Premium Sell Area (Fib 50%-61.8%)")
@@ -1464,9 +1479,10 @@ def analyze_symbol(symbol, anchored_signal=None, btc_sentiment=None, session_inf
                             choch_badge = "Asian Low Swept 🟢"
                             is_asian_sweep_setup = True
                             trailing_sl = sl
-                            tp1 = entry + (risk * 1.5)
-                            tp2 = entry + (risk * 2.0)
-                            tp = entry + (risk * 3.0)
+                            # Direct 50% ROI Take Profit Lock
+                            tp = entry * 1.050
+                            tp1 = tp
+                            tp2 = tp
                             reasons.append(f"⚡ Asian Range Sweep: Freshly swept Asian Low (${fmt_price(a_low)}) to ${fmt_price(recent_sweep_low)}")
                             reasons.append(f"⚡ Institutional Reclaim: Price reclaimed above Asian Low structure (Sweep Offset: {dist_from_sweep_low_pct:.1f}% <= 1.8%)")
 
@@ -1486,9 +1502,10 @@ def analyze_symbol(symbol, anchored_signal=None, btc_sentiment=None, session_inf
                             choch_badge = "Asian High Swept 🔴"
                             is_asian_sweep_setup = True
                             trailing_sl = sl
-                            tp1 = entry - (risk * 1.5)
-                            tp2 = entry - (risk * 2.0)
-                            tp = entry - (risk * 3.0)
+                            # Direct 50% ROI Take Profit Lock
+                            tp = entry * 0.950
+                            tp1 = tp
+                            tp2 = tp
                             reasons.append(f"⚡ Asian Range Sweep: Freshly swept Asian High (${fmt_price(a_high)}) to ${fmt_price(recent_sweep_high)}")
                             reasons.append(f"⚡ Institutional Rejection: Price closed back below Asian High structure (Sweep Offset: {dist_from_sweep_high_pct:.1f}% <= 1.8%)")
 
@@ -2180,11 +2197,14 @@ def check_and_resolve_open_trades(news_shield=None):
                         # --- SMC 2.0 CONFIRMED RETEST LIVE EXECUTION ---
                         executed_live_retest = False
                         tier_badge_str = str(s.get("tier_badge", "")).upper()
+                        setup_str = str(s.get("setup", "")).upper()
                         is_tier1 = ("TIER 1" in tier_badge_str) and ("INSTITUTIONAL SMC" in tier_badge_str)
-                        is_tier2_parabolic = ("TIER 2" in tier_badge_str) and ("PARABOLIC" in tier_badge_str)
+                        is_asian_sweep = ("ASIAN RANGE SWEEP" in tier_badge_str) or ("JUDAS" in setup_str)
+                        is_toxic_sr_flip = ("S/R FLIP" in setup_str) or ("BREAKOUT & RETEST" in setup_str) or ("BREAKDOWN & RETEST" in setup_str)
+                        is_parabolic = ("PARABOLIC" in tier_badge_str) or ("PARABOLIC" in setup_str)
 
-                        if not (is_tier1 or is_tier2_parabolic):
-                            print(f"[🛡️] Retest Live Execution Gate: Skipped live execution for {s.get('symbol')} ({s.get('tier_badge')}) - only Tier 1 Institutional SMC and Tier 2 Parabolic permitted on Binance.")
+                        if is_toxic_sr_flip or is_parabolic or not (is_tier1 or is_asian_sweep):
+                            print(f"[🛡️] Retest Live Execution Gate: Skipped live execution for {s.get('symbol')} ({s.get('tier_badge')} | {s.get('setup')}) - blocked from real capital.")
                         elif auto_trader and auto_trader.is_live_enabled() and not s.get("executed_live"):
                             sym = s["symbol"]
                             cb = history_data.get("circuit_breaker", {})
@@ -2624,10 +2644,14 @@ def record_new_signals_to_history(actionable_signals, history_data, open_symbols
             if initial_status == "OPEN":
                 # Strict Live Execution Firewall: Tier 1 Institutional SMC OR Tier 2 Parabolic Exhaustion
                 tier_badge_str = str(act.get("tier_badge", "")).upper()
+                setup_str = str(act.get("setup", "")).upper()
                 is_tier1 = ("TIER 1" in tier_badge_str) and ("INSTITUTIONAL SMC" in tier_badge_str)
-                is_tier2_parabolic = ("TIER 2" in tier_badge_str) and ("PARABOLIC" in tier_badge_str)
-                if not (is_tier1 or is_tier2_parabolic):
-                    print(f"[🛡️] Live Execution Gate: Blocked live order for {sym} ({act.get('tier_badge')}). Real Binance execution is strictly locked to ⭐ TIER 1: INSTITUTIONAL SMC and ⚡ TIER 2: A++ PARABOLIC EXHAUSTION.")
+                is_asian_sweep = ("ASIAN RANGE SWEEP" in tier_badge_str) or ("JUDAS" in setup_str)
+                is_toxic_sr_flip = ("S/R FLIP" in setup_str) or ("BREAKOUT & RETEST" in setup_str) or ("BREAKDOWN & RETEST" in setup_str)
+                is_parabolic = ("PARABOLIC" in tier_badge_str) or ("PARABOLIC" in setup_str)
+
+                if is_toxic_sr_flip or is_parabolic or not (is_tier1 or is_asian_sweep):
+                    print(f"[🛡️] Live Execution Gate: Blocked live order for {sym} ({act.get('tier_badge')} | {act.get('setup')}). Real Binance execution is strictly locked to ⭐ TIER 1: INSTITUTIONAL SMC and ⚡ ASIAN RANGE SWEEP.")
                     send_telegram_new_signal(act)
                     existing_signals.append(new_item)
                     continue
@@ -2679,9 +2703,9 @@ def record_new_signals_to_history(actionable_signals, history_data, open_symbols
 def get_top_pairs(limit=None):
     if limit is None:
         try:
-            limit = int(os.environ.get("SCAN_PAIRS_LIMIT", 150))
+            limit = int(os.environ.get("SCAN_PAIRS_LIMIT", 100))
         except Exception:
-            limit = 150
+            limit = 100
     try:
         # Prefer USDT-M Futures 24hr tickers so 100% of symbols are tradable on Futures
         url = "https://fapi.binance.com/fapi/v1/ticker/24hr"
@@ -2729,7 +2753,8 @@ def get_top_pairs(limit=None):
                     q_vol = float(t.get('quoteVolume', 0))
                 except Exception:
                     q_vol = 0.0
-                if q_vol < 20_000_000:
+                # Liquidity Gate: require >= $25M (25,000,000 USDT) 24h volume
+                if q_vol < 25_000_000:
                     continue
 
                 usdt_pairs.append(t)
